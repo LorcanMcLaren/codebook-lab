@@ -1,0 +1,16 @@
+pandas
+regex
+PyYAML
+langchain-core
+langchain-ollama
+codecarbon
+numpy
+scikit-learn
+krippendorff
+scipy
+python-Levenshtein
+sentence-transformers
+torch
+nltk
+rouge-score
+bert-score

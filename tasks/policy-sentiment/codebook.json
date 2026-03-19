@@ -1,0 +1,42 @@
+{
+  "header_column": "title",
+  "text_column": "text",
+  "section_1": {
+    "section_name": "Policy Sentiment",
+    "section_instruction": "Read the short text and assess whether it expresses an evaluative stance toward a public policy, proposal, or political decision.",
+    "annotations": {
+      "annotation_1": {
+        "name": "Explicit evaluation",
+        "type": "checkbox",
+        "tooltip": "Tick this box if the text clearly expresses approval, disapproval, praise, criticism, support, concern, or another evaluative stance toward the policy or decision. Leave it unticked if the text is mainly descriptive or procedural and does not clearly express a stance.",
+        "example": "Text: \n\"The mayor called the clean transport plan a practical step that will cut congestion and improve air quality.\"\n\nResponse: \n{\"response\": true}\n\n---\n\nText: \n\"The committee will hear witnesses on Tuesday and vote on amendments on Thursday.\"\n\nResponse: \n{\"response\": false}\n\n---\n\nText: \n\"The new childcare package is overdue and will make everyday life easier for working parents.\"\n\nResponse: \n{\"response\": true}"
+      },
+      "annotation_2": {
+        "name": "Direction",
+        "type": "dropdown",
+        "tooltip": "If the text expresses a stance, identify whether the overall direction is positive, negative, or mixed. Use 'no clear sentiment' only when the text does not convey an evaluative stance.",
+        "example": "Text: \n\"The childcare reform is overdue and will give working parents real support.\"\n\nResponse: \n{\"response\": \"positive\"}\n\n---\n\nText: \n\"The housing package may help first-time buyers, but its financing assumptions are unrealistic.\"\n\nResponse: \n{\"response\": \"mixed\"}\n\n---\n\nText: \n\"The proposal is wasteful and risks undermining public trust.\"\n\nResponse: \n{\"response\": \"negative\"}\n\n---\n\nText: \n\"Officials released the updated timetable for debate and implementation.\"\n\nResponse: \n{\"response\": \"no clear sentiment\"}",
+        "options": [
+          "positive",
+          "negative",
+          "mixed",
+          "no clear sentiment"
+        ]
+      },
+      "annotation_3": {
+        "name": "Intensity",
+        "type": "likert",
+        "tooltip": "Rate the overall sentiment on a 5-point scale where 1 = strongly negative, 2 = somewhat negative, 3 = mixed, neutral, or no clear sentiment, 4 = somewhat positive, and 5 = strongly positive.",
+        "example": "Text: \n\"The subsidies are wasteful and will damage market confidence.\"\n\nResponse: \n{\"response\": 1}\n\n---\n\nText: \n\"The tax credit is helpful, though it does not go far enough to solve the problem.\"\n\nResponse: \n{\"response\": 4}\n\n---\n\nText: \n\"The reform has clear advantages, but its implementation risks remain significant.\"\n\nResponse: \n{\"response\": 3}\n\n---\n\nText: \n\"The briefing note lists the agencies involved in implementation.\"\n\nResponse: \n{\"response\": 3}",
+        "min_value": 1,
+        "max_value": 5
+      },
+      "annotation_4": {
+        "name": "Evidence",
+        "type": "textbox",
+        "tooltip": "Provide a short phrase or sentence from the text that best supports your sentiment judgement. Keep the response brief.",
+        "example": "Text: \n\"The regional rail package is a sensible investment that will reconnect towns that have been neglected for decades.\"\n\nResponse: \n{\"response\": \"sensible investment that will reconnect towns\"}\n\n---\n\nText: \n\"The housing proposal may help some renters, but the funding model is fragile and unfair to local councils.\"\n\nResponse: \n{\"response\": \"funding model is fragile and unfair to local councils\"}"
+      }
+    }
+  }
+}

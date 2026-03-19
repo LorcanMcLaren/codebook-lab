@@ -1,0 +1,18 @@
+{
+    "header_column": "configuration",
+    "text_column": "speech_text",
+    "section_1": {
+        "section_name": "General Approval",
+        "section_instruction": "General approval refers to the degree to which the speaker expresses approval of the proposal(s) being negotiated or the state of negotiations. In orientation debates, this dimension will typically be approval of the legislative proposal presented by the European Commission. Later on in the negotiation process, this dimension will typically be approval of the presidency's suggestions. If the speaker presents a most preferred position and one on which they could compromise, always code the preferred position. Assess the degree of approval expressed in the speech below.",
+        "annotations": {
+            "annotation_1": {
+                "name": "Approval",
+                "type": "likert",
+                "tooltip": "The level of approval expressed in the speech should be coded on the following scale: \n\n1 = The speaker expresses full approval.\n\n2 = The speaker expresses more approval than disapproval.\n\n3 = The speaker expresses a balance of approval and disapproval.\n\n4 = The speaker expresses more disapproval than approval.\n\n5 = The speaker expresses full disapproval.\n\nIf the speaker conveys their position but the exact level of approval is hard to assess, choose 3.",
+                "example": "Text: \n\"Thank you Mr. Chairman, we congratulate the Presidency for the good compromise proposal just on the table, we fully support it and can accept it. Regarding the comitology procedure on Article 24 we're part of the declaration together with the United Kingdom, Malta and Ireland. We're ready and we accept the present proposal.\"\n\nResponse: \n{\"response\": \"1\"}\n\n---\n\nText: \n\"Thank you Mr. President, just one word to say that we fully support the position presented by Malta 100%, thank you.\"\n\nResponse: \n{\"response\": \"2\"}\n\n---\n\nText: \n\"Thank you for the floor. The Czech Republic is also very much interested in finding the good compromise. However we think we should maybe work one more month in the effort to try a full compromise, we share the opinion of the Dutch delegation and the Swedish delegation. Thank you.\"\n\nResponse: \n{\"response\": \"3\"}\n\n---\n\nText: \n\"I recognize the Presidency's effort in finding compromise, but I am concerned about the unleveled playing field it introduces since some Member States will exchange a lot of information while other Member States will exchange only a little information. Therefore I agree with the Dutch proposal but at the same time we would accept the compromise if it were the only way to reach an agreement.\"\n\nResponse: \n{\"response\": \"4\"}\n\n---\n\nText: \n\"Thank you, we are all currently engaged in consolidating our national economies and cutting expenses on the national budgets and therefore it seems out of touch with the economic realities with Member States that the European Commission while recommending budget cuts in Member States at the same time asks for additional monetary resources for itself.\"\n\nResponse: \n{\"response\": \"5\"}",
+                "min_value": 1,
+                "max_value": 5
+            }
+        }
+    }
+}

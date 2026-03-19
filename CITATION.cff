@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite both the software and the associated preprint."
+title: "CodeBook Lab"
+type: software
+authors:
+  - family-names: "McLaren"
+    given-names: "Lorcan"
+version: "0.1.0"
+date-released: 2026-03-18
+preferred-citation:
+  type: article
+  title: "Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation"
+  year: 2026
+  authors:
+    - family-names: "McLaren"
+      given-names: "Lorcan"
+    - family-names: "Cross"
+      given-names: "James P."
+    - family-names: "Krakowska"
+      given-names: "Zuzanna"
+    - family-names: "Rauner"
+      given-names: "Robin"
+    - family-names: "Schoonvelde"
+      given-names: "Martijn"

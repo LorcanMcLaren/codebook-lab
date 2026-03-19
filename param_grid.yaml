@@ -1,0 +1,11 @@
+# Environment setting: update this to match where the compute is physically running.
+country_iso_code: "USA"
+
+# Experiment sweep settings
+tasks: ["policy-sentiment"]
+models: ["gemma3:270m"]
+use_examples: ["false"]
+prompt_types: ["standard"]
+temperatures: []
+top_ps: []
+process_textboxes: ["true"]
