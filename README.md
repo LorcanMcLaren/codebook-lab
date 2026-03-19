@@ -13,6 +13,29 @@ In practice, the workflow is:
 - control the experiment through `param_grid.yaml`
 - run the pipeline and compare performance, timing, and energy tradeoffs
 
+<table>
+  <tr>
+    <td align="center"><strong>CodeBook Studio</strong></td>
+    <td align="center"></td>
+    <td align="center"><strong>CodeBook Lab</strong></td>
+  </tr>
+  <tr>
+    <td valign="top">
+      Define the annotation task<br>
+      Annotate texts with humans<br>
+      Export <code>codebook.json</code>
+    </td>
+    <td align="center" valign="middle">→</td>
+    <td valign="top">
+      Run LLM annotation experiments<br>
+      Compare models, prompts, and settings<br>
+      Evaluate outputs against human labels
+    </td>
+  </tr>
+</table>
+
+<p><em>CodeBook Studio defines the task; CodeBook Lab runs and evaluates the experiment.</em></p>
+
 Most experiments are controlled through `param_grid.yaml`. In most cases, you do not need to edit the pipeline code to try a new task, model, or prompt setup.
 
 The tutorial keeps the workflow simple:
@@ -34,17 +57,19 @@ The tutorial keeps the workflow simple:
 
 ## Why This Exists
 
-This pipeline is paired with the [CodeBook Studio](https://codebook.streamlit.app/) web app ([source code](https://github.com/LorcanMcLaren/codebook-studio)), both developed by Lorcan McLaren, so that researchers can:
+CodeBook Lab is paired with [CodeBook Studio](https://codebook.streamlit.app/) ([source code](https://github.com/LorcanMcLaren/codebook-studio)) so researchers can define an annotation task once and then use the same codebook for human annotation and LLM experiments.
 
-- define their own annotation tasks instead of relying only on prebuilt examples
+The goal is to make it easier to:
+
+- define annotation tasks that match their own research questions and data
 - run classification and other structured text annotation tasks with local LLMs
 - work with binary, categorical, Likert-scale, and open-ended text annotations in the same workflow
 - compare the effects of different prompt and decoding choices
 - validate model outputs against human annotations used as a benchmark
 - evaluate accuracy, agreement, speed, and energy tradeoffs in a consistent way
-- spend less time building bespoke annotation infrastructure for each new project
+- spend less time building bespoke annotation infrastructure for each project
 
-This combination is especially useful for research teams with varied technical proficiencies, because the codebook and experiment configuration are separated from the lower-level pipeline code.
+This separation between task design, experiment configuration, and pipeline code is especially useful for research teams with varied technical proficiencies.
 
 ## Repository Layout
 
@@ -158,7 +183,7 @@ Once you have run the default example, the next step is usually either:
 - adapt `tasks/policy-sentiment/` to your own research setting
 - add a new task folder with your own `sample.csv`, `ground-truth.csv`, and `codebook.json`
 
-For most users, this is more useful than switching between canned examples, because the main goal of CodeBook Studio and CodeBook Lab is to make it easy to define and test your own annotation tasks.
+For most users, this is more useful than switching between toy examples, because the main goal of CodeBook Studio and CodeBook Lab is to make it easy to define and test annotation tasks that fit their own research design.
 
 ### Step 4: Sweep over settings
 
