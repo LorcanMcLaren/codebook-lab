@@ -39,7 +39,7 @@ if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
   exit 1
 fi
 
-TASKS=($(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); print(" ".join(map(str, p.get("tasks") or ["sentiment"])))'))
+TASKS=($(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); print(" ".join(map(str, p.get("tasks") or ["policy-sentiment"])))'))
 MODELS=($(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); print(" ".join(map(str, p.get("models") or ["gemma3:270m"])))'))
 COUNTRY_ISO_CODE=$(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); print(str(p.get("country_iso_code") or "USA"))')
 USE_EXAMPLES=($(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); print(" ".join(map(str, p.get("use_examples") or ["false"])))'))

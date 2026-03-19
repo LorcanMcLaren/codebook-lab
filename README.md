@@ -51,8 +51,6 @@ This combination is especially useful for research teams with varied technical p
 - `scripts/run_local.sh`: local experiment runner using Ollama.
 - `scripts/run_hpc_slurm.sh`: simple SLURM template that calls the same runner.
 - `tasks/policy-sentiment/`: synthetic starter task showing checkbox, dropdown, Likert, and textbox annotations in one workflow.
-- `tasks/sentiment/`: an additional sentiment example task.
-- `tasks/approval/`: an additional Likert-style approval example task.
 - `param_grid.yaml`: the main experiment control file. It determines which tasks, models, and settings are swept over in a run.
 
 ## Quickstart
@@ -95,7 +93,7 @@ Set `country_iso_code` to the country where the compute is physically running. T
 
 For local runs, this usually means your own country. For HPC runs, it should be the country where the cluster or data center is located, not necessarily the country you are connecting from.
 
-You can switch to `approval`, add more models, or vary prompt settings by editing the YAML file. In normal use, this file is the main control surface for the whole experiment.
+You can add more models or vary prompt settings by editing the YAML file. In normal use, this file is the main control surface for the whole experiment.
 
 ### 4. Run the tutorial experiment
 
@@ -151,15 +149,14 @@ The codebook controls which text column is read, how prompts are worded, and wha
 
 It is designed as a lightweight public tutorial task for computational social science and political science workflows.
 
-### Step 3: Try a second task
+### Step 3: Adapt the starter task or add your own
 
-`tasks/approval/` and `tasks/sentiment/` show how the same pipeline can also be used on more specialized task setups.
+Once you have run the default example, the next step is usually either:
 
-To run it, change:
+- adapt `tasks/policy-sentiment/` to your own research setting
+- add a new task folder with your own `sample.csv`, `ground-truth.csv`, and `codebook.json`
 
-```yaml
-tasks: ["approval"]
-```
+For most users, this is more useful than switching between canned examples, because the main goal of CodeBook Studio and CodeBook Lab is to make it easy to define and test your own annotation tasks.
 
 ### Step 4: Sweep over settings
 
@@ -171,7 +168,7 @@ The main fields are:
 
 The remaining fields are the ones you typically sweep over:
 
-- `tasks`: which task folders to run, for example `sentiment` or `approval`
+- `tasks`: which task folders to run, for example `policy-sentiment` or your own custom task name
 - `models`: which Ollama models to evaluate, using Ollama's own model-name format such as `gemma3:270m` or `qwen3.5:latest`
 - `use_examples`: whether to include the worked examples from the codebook in the LLM prompt
 - `prompt_types`: which prompt template to use; the tutorial pipeline supports `standard`, `persona`, and `CoT`
