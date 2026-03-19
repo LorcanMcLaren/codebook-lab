@@ -1,17 +1,19 @@
 # CodeBook Lab
 
-This repository is a public-facing tutorial version of an LLM annotation pipeline designed for computational social scientists and political scientists. It is meant to make text annotation workflows much more accessible across a wide range of technical backgrounds.
+CodeBook Lab is an LLM annotation pipeline designed for computational social scientists and political scientists. It is meant to make text annotation experiments more accessible across a wide range of technical backgrounds.
 
-The central idea is that researchers can define their own annotation tasks with CodeBook Studio, then use this pipeline to run and compare LLM-based annotation experiments without writing custom annotation code from scratch each time. Human annotations serve as the validation benchmark against which model performance is measured, making it possible to compare LLM outputs to a researcher-defined gold standard. Both CodeBook Studio and the LLM workflow support the main annotation types researchers commonly need: binary labels, categorical labels, Likert-scale ordinal labels, and open-ended text responses. That makes it easier to focus on substantive social science questions while still comparing the tradeoffs of different implementation choices.
+Used alongside CodeBook Studio, it lets researchers define their own annotation tasks, run LLM-based annotation experiments, and compare implementation choices without rebuilding custom infrastructure for each project. Human annotations serve as the validation benchmark, so model outputs are evaluated against a researcher-defined gold standard.
 
-In practice, the workflow looks like this:
+Both CodeBook Studio and CodeBook Lab support the annotation types researchers most commonly need: binary labels, categorical labels, Likert-scale ordinal labels, and open-ended text responses. The aim is to leave more time for substantive social science questions while still making it easy to compare model, prompt, speed, and energy tradeoffs.
+
+In practice, the workflow is:
 
 - define a task and codebook in CodeBook Studio
 - bring the exported `codebook.json` and your CSV data into this repository
 - control the experiment through `param_grid.yaml`
 - run the pipeline and compare performance, timing, and energy tradeoffs
 
-The key idea is that experiments are controlled almost entirely through `param_grid.yaml`. In most cases, you do not need to edit the pipeline code to try a new task, model, or prompt setup. You update the codebook and data for a task, adjust `param_grid.yaml`, and rerun the experiment.
+Most experiments are controlled through `param_grid.yaml`. In most cases, you do not need to edit the pipeline code to try a new task, model, or prompt setup.
 
 The tutorial keeps the workflow simple:
 1. Pick a task with a `sample.csv`, `ground-truth.csv`, and `codebook.json`.
