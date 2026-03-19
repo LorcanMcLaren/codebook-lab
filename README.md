@@ -81,7 +81,7 @@ The separation between task design (Studio), experiment configuration (`param_gr
 - `pipeline/metrics.py`: compares model outputs against ground truth and logs metrics.
 - `scripts/run_local.sh`: local experiment runner using Ollama.
 - `scripts/run_hpc_slurm.sh`: simple SLURM template that calls the same runner.
-- `tasks/policy-sentiment/`: synthetic starter task showing checkbox, dropdown, Likert, and textbox annotations in one workflow.
+- `tasks/policy-sentiment/`: a ready-to-use example task covering all four annotation types (binary, categorical, Likert, and open-ended text).
 - `param_grid.yaml`: the main experiment control file. It determines which tasks, models, and settings are swept over in a run.
 
 ## Quickstart
@@ -161,14 +161,14 @@ This makes it easy to compare not just which model is most accurate, but also wh
 
 Each task directory contains:
 
-- `ground-truth.csv`: the human-annotated reference labels used for evaluation, and also the source from which CodeBook Lab derives the unlabeled LLM input by stripping codebook-defined annotation columns before inference
+- `ground-truth.csv`: the human-annotated data. CodeBook Lab uses this both as the reference for evaluation and as the input for annotation — it automatically strips the label columns before sending text to the LLM
 - `codebook.json`: the annotation instructions and output format
 
 The codebook controls which text column is read, how prompts are worded, and what valid label formats look like.
 
 ### Step 2: Start with `policy-sentiment`
 
-`tasks/policy-sentiment/` is a synthetic starter task that demonstrates all four supported annotation types (binary, categorical, Likert, and open-ended text). It is easy to share publicly and designed as a lightweight first example.
+`tasks/policy-sentiment/` includes all four supported annotation types (binary, categorical, Likert, and open-ended text), so you can see how each one works before setting up your own task.
 
 ### Step 3: Adapt the starter task or add your own
 
