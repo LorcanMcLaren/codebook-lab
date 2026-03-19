@@ -2,13 +2,13 @@
 
 CodeBook Lab is an LLM annotation pipeline designed for computational social scientists and political scientists. It is meant to make text annotation experiments more accessible across a wide range of technical backgrounds.
 
-Used alongside CodeBook Studio, it lets researchers define their own annotation tasks, run LLM-based annotation experiments, and compare implementation choices without rebuilding custom infrastructure for each project. Human annotations serve as the validation benchmark, so model outputs are evaluated against a researcher-defined gold standard.
+Used alongside [CodeBook Studio](https://codebook.streamlit.app/) ([source code](https://github.com/LorcanMcLaren/codebook-studio)), it lets researchers define their own annotation tasks, run LLM-based annotation experiments, and compare implementation choices without rebuilding custom infrastructure for each project. Human annotations serve as the validation benchmark, so model outputs are evaluated against a researcher-defined gold standard.
 
-Both CodeBook Studio and CodeBook Lab support the annotation types researchers most commonly need: binary labels, categorical labels, Likert-scale ordinal labels, and open-ended text responses. The aim is to leave more time for substantive social science questions while still making it easy to compare model, prompt, speed, and energy tradeoffs.
+Both [CodeBook Studio](https://codebook.streamlit.app/) and CodeBook Lab support the annotation types researchers most commonly need: binary labels, categorical labels, Likert-scale ordinal labels, and open-ended text responses. The aim is to leave more time for substantive social science questions while still making it easy to compare model, prompt, speed, and energy tradeoffs.
 
 In practice, the workflow is:
 
-- define a task and codebook in CodeBook Studio
+- define a task and codebook in [CodeBook Studio](https://codebook.streamlit.app/)
 - bring the exported `codebook.json` and your CSV data into this repository
 - control the experiment through `param_grid.yaml`
 - run the pipeline and compare performance, timing, and energy tradeoffs
@@ -34,7 +34,7 @@ The tutorial keeps the workflow simple:
 
 ## Why This Exists
 
-This pipeline is paired with the CodeBook Studio web app, both developed by Lorcan McLaren, so that researchers can:
+This pipeline is paired with the [CodeBook Studio](https://codebook.streamlit.app/) web app ([source code](https://github.com/LorcanMcLaren/codebook-studio)), both developed by Lorcan McLaren, so that researchers can:
 
 - define their own annotation tasks instead of relying only on prebuilt examples
 - run classification and other structured text annotation tasks with local LLMs
@@ -142,7 +142,7 @@ The codebook controls which text column is read, how prompts are worded, and wha
 
 ### Step 2: Start with `policy-sentiment`
 
-`tasks/policy-sentiment/` is the best first example because it is synthetic, easy to share publicly, and demonstrates all four annotation types supported by CodeBook Studio and the pipeline:
+`tasks/policy-sentiment/` is the best first example because it is synthetic, easy to share publicly, and demonstrates all four annotation types supported by [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and the pipeline:
 
 - checkbox / binary annotation
 - dropdown / categorical annotation
@@ -189,9 +189,9 @@ If you only want a single quick run, keep one value in each field. If you want a
 
 ## Create Your Own Task
 
-You are not limited to the example tasks in this repository. You can define your own annotation task by preparing a dataset and creating a JSON codebook with CodeBook Studio.
+You are not limited to the example tasks in this repository. You can define your own annotation task by preparing a dataset and creating a JSON codebook with [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio).
 
-CodeBook Studio is a codebook-driven text annotation app for computational social science. It lets you:
+[CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) is a codebook-driven text annotation app for computational social science. It lets you:
 
 - choose the header and text columns from your CSV
 - define sections and annotation questions
@@ -200,18 +200,18 @@ CodeBook Studio is a codebook-driven text annotation app for computational socia
 - preview the prompts that will be sent to the LLM
 - download the codebook as JSON for direct use in this pipeline
 
-The public app is available at [codebook.streamlit.app](https://codebook.streamlit.app/).
+The hosted app is available at [codebook.streamlit.app](https://codebook.streamlit.app/), and the source code is available at [github.com/LorcanMcLaren/codebook-studio](https://github.com/LorcanMcLaren/codebook-studio).
 
 To add your own task to this tutorial repo:
 
 1. Create a new folder such as `tasks/my-task/`.
 2. Add your input data as `sample.csv`.
-3. Create your codebook in CodeBook Studio and download the JSON file.
+3. Create your codebook in [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and download the JSON file.
 4. Save that JSON file as `tasks/my-task/codebook.json`.
 5. If you want evaluation metrics, add a labeled `tasks/my-task/ground-truth.csv`.
 6. Update `param_grid.yaml` to include your task name.
 
-The JSON codebook used by CodeBook Studio matches the structure expected by this pipeline. In practice, that means your codebook should define:
+The JSON codebook used by [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) matches the structure expected by this pipeline. In practice, that means your codebook should define:
 
 - `header_column`: the column shown as the title or identifier during annotation
 - `text_column`: the text field the model should annotate
