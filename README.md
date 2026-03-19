@@ -58,11 +58,10 @@ The tutorial keeps the workflow simple:
 - [Create Your Own Task](#create-your-own-task)
 - [Running on HPC](#running-on-hpc)
 - [Advanced Customization](#advanced-customization)
+- [License](#license)
 - [Citation](#citation)
 
 ## Why This Exists
-
-CodeBook Lab is paired with [CodeBook Studio](https://codebook.streamlit.app/) ([source code](https://github.com/LorcanMcLaren/codebook-studio)) so researchers can define an annotation task once and then use the same codebook for human annotation and LLM experiments.
 
 The goal is to make it easier to:
 
@@ -74,7 +73,7 @@ The goal is to make it easier to:
 - evaluate accuracy, agreement, speed, and energy tradeoffs in a consistent way
 - spend less time building bespoke annotation infrastructure for each project
 
-This separation between task design, experiment configuration, and pipeline code is especially useful for research teams with varied technical proficiencies.
+The separation between task design (Studio), experiment configuration (`param_grid.yaml`), and pipeline code is especially useful for research teams with varied technical proficiencies.
 
 ## Repository Layout
 
@@ -154,8 +153,6 @@ That metrics log stores both annotation-quality metrics and run metadata. Depend
 - textbox metrics such as normalized Levenshtein similarity, BLEU, ROUGE, cosine similarity, and BERTScore
 - resource and run metadata such as CPU model, GPU model, total inference time, average inference time, total input characters, total output characters, energy consumed in kWh, and emissions in kg CO2eq
 
-Because emissions are estimated from energy use using country-specific factors, you should make sure `country_iso_code` in `param_grid.yaml` matches the location of the machine actually doing the computation. On HPC, that means the cluster's country.
-
 This makes it easy to compare not just which model is most accurate, but also which setup is fastest, cheapest to run, and most energy intensive.
 
 ## Tutorial Walkthrough
@@ -171,23 +168,11 @@ The codebook controls which text column is read, how prompts are worded, and wha
 
 ### Step 2: Start with `policy-sentiment`
 
-`tasks/policy-sentiment/` is the best first example because it is synthetic, easy to share publicly, and demonstrates all four annotation types supported by [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and the pipeline:
-
-- checkbox / binary annotation
-- dropdown / categorical annotation
-- Likert / ordinal annotation
-- textbox / open-ended annotation
-
-It is designed as a lightweight public tutorial task for computational social science and political science workflows.
+`tasks/policy-sentiment/` is a synthetic starter task that demonstrates all four supported annotation types (binary, categorical, Likert, and open-ended text). It is easy to share publicly and designed as a lightweight first example.
 
 ### Step 3: Adapt the starter task or add your own
 
-Once you have run the default example, the next step is usually either:
-
-- adapt `tasks/policy-sentiment/` to your own research setting
-- add a new task folder with your own `ground-truth.csv` and `codebook.json`
-
-For most users, this is more useful than switching between toy examples, because the main goal of CodeBook Studio and CodeBook Lab is to make it easy to define and test annotation tasks that fit their own research design.
+Once you have run the default example, you can either adapt `tasks/policy-sentiment/` to your own research setting or add a new task folder with your own `ground-truth.csv` and `codebook.json`. See [Create Your Own Task](#create-your-own-task) for details.
 
 ### Step 4: Sweep over settings
 
@@ -218,30 +203,16 @@ If you only want a single quick run, keep one value in each field. If you want a
 
 ## Create Your Own Task
 
-You are not limited to the example tasks in this repository. You can define your own annotation task by preparing a dataset and creating a JSON codebook with [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio).
+You can define your own annotation task by preparing a dataset and creating a JSON codebook with [CodeBook Studio](https://codebook.streamlit.app/) ([source code](https://github.com/LorcanMcLaren/codebook-studio)).
 
-[CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) is a codebook-driven text annotation app for computational social science. It lets you:
-
-- choose the header and text columns from your CSV
-- define sections and annotation questions
-- use checkbox, dropdown, Likert, and textbox response types
-- add instructions and examples for annotators and LLM prompts
-- preview the prompts that will be sent to the LLM
-- download the codebook as JSON for direct use in this pipeline
-
-The hosted app is available at [codebook.streamlit.app](https://codebook.streamlit.app/), and the source code is available at [github.com/LorcanMcLaren/codebook-studio](https://github.com/LorcanMcLaren/codebook-studio).
-
-To add your own task to this tutorial repo:
+To add your own task:
 
 1. Create a new folder such as `tasks/my-task/`.
-2. Annotate your data in [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and save the labeled file as `tasks/my-task/ground-truth.csv`.
-3. Create your codebook in [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and download the JSON file.
-4. Save that JSON file as `tasks/my-task/codebook.json`.
-5. Update `param_grid.yaml` to include your task name.
+2. Annotate your data in [CodeBook Studio](https://codebook.streamlit.app/) and save the labeled file as `tasks/my-task/ground-truth.csv`.
+3. Download the codebook JSON from Studio and save it as `tasks/my-task/codebook.json`.
+4. Update `param_grid.yaml` to include your task name.
 
-When the pipeline runs, CodeBook Lab uses the codebook to identify the annotation columns in `ground-truth.csv`, removes those columns before sending the text to the LLM, and then evaluates the model outputs against the original human labels.
-
-The JSON codebook used by [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) matches the structure expected by this pipeline. In practice, that means your codebook should define:
+The codebook should define:
 
 - `header_column`: the column shown as the title or identifier during annotation
 - `text_column`: the text field the model should annotate
@@ -272,6 +243,10 @@ If you want to go beyond the default wrappers and hyperparameters, `pipeline/ann
 
 That way, you can keep the same configuration-driven workflow while expanding what the experiment runner is able to sweep over.
 
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
 ## Citation
 
 If you use this repository in research, please cite both:
@@ -279,7 +254,7 @@ If you use this repository in research, please cite both:
 - this software repository
 - the associated preprint
 
-The repository includes a [`CITATION.cff`](/Users/lorcanmclaren/Python/codebook-lab/CITATION.cff) file for the software citation used by GitHub's citation interface.
+The repository includes a [`CITATION.cff`](CITATION.cff) file for the software citation used by GitHub's citation interface.
 
 ### Software Citation
 
