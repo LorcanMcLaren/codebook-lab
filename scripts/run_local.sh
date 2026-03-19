@@ -49,11 +49,21 @@ TOP_PS=($(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); pr
 PROCESS_TEXTBOXES=($(python3 -c 'import yaml; p=yaml.safe_load(open("param_grid.yaml")); print(" ".join(map(str, p.get("process_textboxes") or ["false"])))'))
 
 for TASK in "${TASKS[@]}"; do
-  INPUT="tasks/${TASK}/sample.csv"
-  CODEBOOK="tasks/${TASK}/codebook.json"
   GROUND_TRUTH="tasks/${TASK}/ground-truth.csv"
+  INPUT="$GROUND_TRUTH"
+  CODEBOOK="tasks/${TASK}/codebook.json"
   LABEL="$TASK"
   METRICS_OUTPUT="outputs/metrics/${TASK}_metrics_log.csv"
+
+  if [[ ! -f "$CODEBOOK" ]]; then
+    echo "Codebook not found for task '$TASK': $CODEBOOK"
+    exit 1
+  fi
+
+  if [[ ! -f "$GROUND_TRUTH" ]]; then
+    echo "Ground truth file not found for task '$TASK': $GROUND_TRUTH"
+    exit 1
+  fi
 
   for MODEL in "${MODELS[@]}"; do
     for USE_EXAMPLE in "${USE_EXAMPLES[@]}"; do

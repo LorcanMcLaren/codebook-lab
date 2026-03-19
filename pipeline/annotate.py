@@ -14,6 +14,44 @@ def load_codebook(codebook_path):
         codebook = json.load(file)
     return codebook
 
+def get_annotation_column_names(codebook):
+    annotation_columns = []
+
+    for key, section in codebook.items():
+        if not key.startswith("section_"):
+            continue
+
+        section_name = section["section_name"]
+        annotations = section.get("annotations", {})
+
+        for annotation in annotations.values():
+            annotation_columns.append(f"{section_name}_{annotation['name']}")
+
+    return annotation_columns
+
+def load_input_dataframe(csv_path, codebook):
+    df = pd.read_csv(csv_path)
+    annotation_columns = get_annotation_column_names(codebook)
+    columns_to_drop = [column for column in annotation_columns if column in df.columns]
+
+    if columns_to_drop:
+        df = df.drop(columns=columns_to_drop)
+        dropped_columns = ", ".join(columns_to_drop)
+        print(
+            "Dropping annotation label columns from input before LLM annotation: "
+            f"{dropped_columns}",
+            flush=True
+        )
+        sys.stdout.flush()
+
+    text_column = codebook["text_column"]
+    if text_column not in df.columns:
+        raise ValueError(
+            f"Text column '{text_column}' was not found in {csv_path} after preparing the input data."
+        )
+
+    return df
+
 def normalize_country_iso_code(country_iso_code):
     normalized = country_iso_code.strip().upper()
     if len(normalized) != 3 or not normalized.isalpha():
@@ -351,7 +389,7 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
 
 def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_type="standard", 
                               use_examples=False, process_textbox=False):
-    df = pd.read_csv(csv_path)
+    df = load_input_dataframe(csv_path, codebook)
     
     print(f"Starting classification of {len(df)} rows", flush=True)
     sys.stdout.flush()

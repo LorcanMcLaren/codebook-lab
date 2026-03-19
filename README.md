@@ -2,14 +2,16 @@
 
 CodeBook Lab is an LLM annotation pipeline designed for computational social scientists and political scientists. It is meant to make text annotation experiments more accessible across a wide range of technical backgrounds.
 
-Used alongside [CodeBook Studio](https://codebook.streamlit.app/) ([source code](https://github.com/LorcanMcLaren/codebook-studio)), it lets researchers define their own annotation tasks, run LLM-based annotation experiments, and compare implementation choices without rebuilding custom infrastructure for each project. Human annotations serve as the validation benchmark, so model outputs are evaluated against a researcher-defined gold standard.
+Used alongside [CodeBook Studio](https://codebook.streamlit.app/) ([source code](https://github.com/LorcanMcLaren/codebook-studio)), it lets researchers define their own annotation tasks, run LLM-based annotation experiments, and compare implementation choices without rebuilding custom infrastructure for each project. Human annotations produced in Studio serve as the validation benchmark, so model outputs are evaluated against a researcher-defined gold standard.
 
 Both [CodeBook Studio](https://codebook.streamlit.app/) and CodeBook Lab support the annotation types researchers most commonly need: binary labels, categorical labels, Likert-scale ordinal labels, and open-ended text responses. The aim is to leave more time for substantive social science questions while still making it easy to compare model, prompt, speed, and energy tradeoffs.
 
 In practice, the workflow is:
 
 - define a task and codebook in [CodeBook Studio](https://codebook.streamlit.app/)
-- bring the exported `codebook.json` and your CSV data into this repository
+- save the human-annotated CSV as `ground-truth.csv`
+- bring the exported `codebook.json` and annotated CSV into this repository
+- let CodeBook Lab strip the label columns from `ground-truth.csv` before sending text to the LLM
 - control the experiment through `param_grid.yaml`
 - run the pipeline and compare performance, timing, and energy tradeoffs
 
@@ -23,10 +25,13 @@ In practice, the workflow is:
     <td valign="top">
       Define the annotation task<br>
       Annotate texts with humans<br>
-      Export <code>codebook.json</code>
+      Export <code>codebook.json</code><br>
+      Save labeled data as <code>ground-truth.csv</code>
     </td>
     <td align="center" valign="middle">→</td>
     <td valign="top">
+      Read rows from <code>ground-truth.csv</code><br>
+      Strip label columns automatically<br>
       Run LLM annotation experiments<br>
       Compare models, prompts, and settings<br>
       Evaluate outputs against human labels
@@ -39,7 +44,7 @@ In practice, the workflow is:
 Most experiments are controlled through `param_grid.yaml`. In most cases, you do not need to edit the pipeline code to try a new task, model, or prompt setup.
 
 The tutorial keeps the workflow simple:
-1. Pick a task with a `sample.csv`, `ground-truth.csv`, and `codebook.json`.
+1. Pick a task with a `ground-truth.csv` and `codebook.json`.
 2. Choose one or more local Ollama models in `param_grid.yaml`.
 3. Run the annotation pipeline.
 4. Inspect the generated outputs and metrics.
@@ -159,8 +164,7 @@ This makes it easy to compare not just which model is most accurate, but also wh
 
 Each task directory contains:
 
-- `sample.csv`: the input rows to annotate
-- `ground-truth.csv`: the reference labels used for evaluation
+- `ground-truth.csv`: the human-annotated reference labels used for evaluation, and also the source from which CodeBook Lab derives the unlabeled LLM input by stripping codebook-defined annotation columns before inference
 - `codebook.json`: the annotation instructions and output format
 
 The codebook controls which text column is read, how prompts are worded, and what valid label formats look like.
@@ -181,7 +185,7 @@ It is designed as a lightweight public tutorial task for computational social sc
 Once you have run the default example, the next step is usually either:
 
 - adapt `tasks/policy-sentiment/` to your own research setting
-- add a new task folder with your own `sample.csv`, `ground-truth.csv`, and `codebook.json`
+- add a new task folder with your own `ground-truth.csv` and `codebook.json`
 
 For most users, this is more useful than switching between toy examples, because the main goal of CodeBook Studio and CodeBook Lab is to make it easy to define and test annotation tasks that fit their own research design.
 
@@ -230,11 +234,12 @@ The hosted app is available at [codebook.streamlit.app](https://codebook.streaml
 To add your own task to this tutorial repo:
 
 1. Create a new folder such as `tasks/my-task/`.
-2. Add your input data as `sample.csv`.
+2. Annotate your data in [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and save the labeled file as `tasks/my-task/ground-truth.csv`.
 3. Create your codebook in [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) and download the JSON file.
 4. Save that JSON file as `tasks/my-task/codebook.json`.
-5. If you want evaluation metrics, add a labeled `tasks/my-task/ground-truth.csv`.
-6. Update `param_grid.yaml` to include your task name.
+5. Update `param_grid.yaml` to include your task name.
+
+When the pipeline runs, CodeBook Lab uses the codebook to identify the annotation columns in `ground-truth.csv`, removes those columns before sending the text to the LLM, and then evaluates the model outputs against the original human labels.
 
 The JSON codebook used by [CodeBook Studio](https://github.com/LorcanMcLaren/codebook-studio) matches the structure expected by this pipeline. In practice, that means your codebook should define:
 
@@ -252,7 +257,7 @@ Each annotation can include:
 - `options` for dropdown fields
 - `min_value` and `max_value` for Likert fields
 
-If you are still designing a task and do not yet have gold labels, you can still run annotation with `pipeline/annotate.py` and add `ground-truth.csv` later when you want to score model performance with `pipeline/metrics.py`.
+If you are still designing a task and do not yet have human-coded labels, you can still run annotation with `pipeline/annotate.py` on an unlabeled CSV and add `ground-truth.csv` later when you want to score model performance with `pipeline/metrics.py`.
 
 ## Running on HPC
 
