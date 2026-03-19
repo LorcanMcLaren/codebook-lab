@@ -249,8 +249,39 @@ If you use this repository in research, please cite both:
 - this software repository
 - the associated preprint
 
-The repository includes a [`CITATION.cff`](/Users/lorcanmclaren/Python/codebook-lab/CITATION.cff) file to make the software citable.
+The repository includes a [`CITATION.cff`](/Users/lorcanmclaren/Python/codebook-lab/CITATION.cff) file for the software citation used by GitHub's citation interface.
 
-The associated preprint is:
+### Software Citation
 
-McLaren, L., Cross, J. P., Krakowska, Z., Rauner, R., and Schoonvelde, M. (2026). *Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation*.
+APSR style:
+
+McLaren, Lorcan. 2026. *CodeBook Lab* (Version 0.1.0) [Computer software]. [https://github.com/LorcanMcLaren/codebook-lab](https://github.com/LorcanMcLaren/codebook-lab).
+
+BibTeX:
+
+```bibtex
+@software{mclaren_codebook_lab_2026,
+  author = {McLaren, Lorcan},
+  title = {CodeBook Lab},
+  year = {2026},
+  version = {0.1.0},
+  url = {https://github.com/LorcanMcLaren/codebook-lab}
+}
+```
+
+### Preprint Citation
+
+APSR style:
+
+McLaren, Lorcan, James P. Cross, Zuzanna Krakowska, Robin Rauner, and Martijn Schoonvelde. 2026. *Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation*. Preprint.
+
+BibTeX:
+
+```bibtex
+@misc{mclaren_magic_words_2026,
+  author = {McLaren, Lorcan and Cross, James P. and Krakowska, Zuzanna and Rauner, Robin and Schoonvelde, Martijn},
+  title = {Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation},
+  year = {2026},
+  note = {Preprint}
+}
+```
