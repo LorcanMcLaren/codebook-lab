@@ -1,5 +1,7 @@
 # CodeBook Lab
 
+[![DOI](https://zenodo.org/badge/1186234207.svg)](https://doi.org/10.5281/zenodo.19185921)
+
 CodeBook Lab is an LLM annotation experiment pipeline for computational social science. It takes a codebook and labelled dataset from [CodeBook Studio](https://codebook.streamlit.app/) ([source](https://github.com/LorcanMcLaren/codebook-studio)) and runs structured experiments across the dimensions that matter for text-as-data research: model choice, model size, prompt style, zero-shot versus few-shot learning, and sampling hyperparameters — all benchmarked against human labels.
 
 Experiments are controlled through a single `param_grid.yaml` file rather than by editing pipeline code. Because the codebook and labelled data stay constant across runs, each dimension can be isolated and compared against the same human labels.
@@ -170,7 +172,7 @@ The repository includes a [`CITATION.cff`](CITATION.cff) file for the software c
 
 APSR style:
 
-McLaren, Lorcan. 2026. *CodeBook Lab* (Version 0.1.0) [Computer software]. [https://github.com/LorcanMcLaren/codebook-lab](https://github.com/LorcanMcLaren/codebook-lab).
+McLaren, Lorcan. 2026. *CodeBook Lab* (Version v1.0.0) [Computer software]. Zenodo. [https://doi.org/10.5281/zenodo.19185921](https://doi.org/10.5281/zenodo.19185921).
 
 BibTeX:
 
@@ -179,8 +181,9 @@ BibTeX:
   author = {McLaren, Lorcan},
   title = {CodeBook Lab},
   year = {2026},
-  version = {0.1.0},
-  url = {https://github.com/LorcanMcLaren/codebook-lab}
+  version = {v1.0.0},
+  doi = {10.5281/zenodo.19185921},
+  url = {https://doi.org/10.5281/zenodo.19185921}
 }
 ```
 
