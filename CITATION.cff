@@ -1,6 +1,13 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below."
 title: "CodeBook Lab"
+abstract: "An LLM annotation experiment pipeline for computational social science."
+keywords:
+  - "LLM"
+  - "text annotation"
+  - "computational social science"
+  - "benchmarking"
+  - "text-as-data"
 type: software
 authors:
   - family-names: "McLaren"
