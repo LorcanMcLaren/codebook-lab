@@ -4,18 +4,17 @@
 
 CodeBook Lab is an LLM annotation experiment pipeline for computational social science. It takes a codebook and labelled dataset from [CodeBook Studio](https://codebook.streamlit.app/) ([source](https://github.com/LorcanMcLaren/codebook-studio)) and runs structured experiments across the dimensions that matter for text-as-data research: model choice, model size, prompt style, zero-shot versus few-shot learning, and sampling hyperparameters — all benchmarked against human labels.
 
-Experiments are controlled through a single `param_grid.yaml` file rather than by editing pipeline code. Because the codebook and labelled data stay constant across runs, each dimension can be isolated and compared against the same human labels.
+Experiments are controlled through Python objects rather than by editing pipeline code. Because the codebook and labelled data stay constant across runs, each dimension can be isolated and compared against the same human labels.
 
 For a step-by-step walkthrough covering both tools, see the [CodeBook Studio & Lab Tutorial](https://lorcanmclaren.com/codebook-tutorial.html).
 
 ## Contents
 
 - [How It Fits With CodeBook Studio](#how-it-fits-with-codebook-studio)
-- [Repository Layout](#repository-layout)
+- [Package Overview](#package-overview)
 - [Quickstart](#quickstart)
 - [Experiment Configuration](#experiment-configuration)
 - [Create Your Own Task](#create-your-own-task)
-- [Running on HPC](#running-on-hpc)
 - [Advanced Customization](#advanced-customization)
 - [License](#license)
 - [Citation](#citation)
@@ -47,14 +46,18 @@ For a step-by-step walkthrough covering both tools, see the [CodeBook Studio & L
   </tr>
 </table>
 
-## Repository Layout
+## Package Overview
 
-- `pipeline/annotate.py`: runs annotation over a CSV using a codebook-driven prompt.
-- `pipeline/metrics.py`: compares model outputs against ground truth and logs metrics.
-- `scripts/run_local.sh`: local experiment runner using Ollama.
-- `scripts/run_hpc_slurm.sh`: simple SLURM template that calls the same runner.
-- `tasks/policy-sentiment/`: a ready-to-use example task covering all four annotation types (binary, categorical, Likert, and open-ended text).
-- `param_grid.yaml`: the main experiment control file.
+The package is organized around a small set of importable modules:
+
+- `codebook_lab.experiments`: high-level functions for single experiments and multi-run comparisons
+- `codebook_lab.annotate`: lower-level annotation functions
+- `codebook_lab.metrics`: evaluation and metrics functions
+- `codebook_lab.prompts`: prompt wrapper registry for built-in and custom prompt styles
+- `codebook_lab.examples`: helpers for bundled example tasks
+- `codebook_lab.types`: dataclasses for experiment specifications and result objects
+
+The package also ships with a bundled example task, `policy-sentiment`, so you can start experimenting immediately after installation.
 
 ## Quickstart
 
@@ -63,8 +66,16 @@ For a step-by-step walkthrough covering both tools, see the [CodeBook Studio & L
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install codebook-lab
+```
+
+This installs CodeBook Lab from a package index so you can import it in your own scripts, notebooks, or analysis workflows.
+
+If you plan to generate or score `textbox` annotations, install the optional textbox dependencies as well:
+
+```bash
+python -m pip install "codebook-lab[textbox]"
 ```
 
 ### 2. Install and start Ollama
@@ -75,27 +86,100 @@ Install Ollama on your machine, then make sure the local server is running:
 ollama serve
 ```
 
-You can also let `scripts/run_local.sh` start it automatically if it is not already running.
+If the default local Ollama server is not already running, CodeBook Lab will try to start it automatically when you run an experiment. It will also pull the requested Ollama model automatically if it is not already available locally.
 
 ### 3. Choose a model and task
 
-The default config in `param_grid.yaml` runs the `policy-sentiment` task with `gemma3:270m`. Any model available through Ollama can be used.
+The package ships with a bundled example task called `policy-sentiment`. Any Ollama model available on your machine can be used.
 
-```yaml
-# Environment setting
-country_iso_code: "USA"
+```python
+task = "policy-sentiment"
+model = "gemma3:270m"
+```
 
-# Experiment sweep settings
-tasks: ["policy-sentiment"]
-models: ["gemma3:270m"]
+You can inspect or copy bundled example tasks from Python:
+
+```python
+from codebook_lab import copy_example_task, list_example_tasks
+
+print(list_example_tasks())
+copy_example_task("policy-sentiment", "./my_tasks", overwrite=True)
 ```
 
 Set `country_iso_code` to the country where the compute is physically running. This is used by CodeCarbon to convert energy use into emissions factors and should be a 3-letter ISO 3166-1 alpha-3 code such as `USA`, `IRL`, or `DEU`.
 
-### 4. Run the experiment
+### 4. Run experiments from Python
 
-```bash
-bash scripts/run_local.sh
+Single experiment:
+
+```python
+from codebook_lab import ExperimentSpec, run_experiment
+
+result = run_experiment(
+    ExperimentSpec(
+        task="policy-sentiment",
+        model="gemma3:270m",
+        use_examples=False,
+        prompt_type="standard",
+        temperature=None,
+        top_p=None,
+        process_textbox=True,
+        country_iso_code="IRL",
+    ),
+    output_root="outputs",
+)
+
+print(result.experiment_directory)
+print(result.metrics.summary_text)
+```
+
+If `process_textbox=True`, CodeBook Lab will calculate textbox similarity metrics such as ROUGE, cosine similarity, and BERTScore when the optional textbox dependencies are installed. Without them, the run still completes, but textbox metrics that rely on those packages will be reported as unavailable and the warning will tell you how to install them.
+
+Parameter sweep:
+
+```python
+from codebook_lab import run_experiment_grid
+
+results = run_experiment_grid(
+    param_grid={
+        "country_iso_code": "IRL",
+        "tasks": ["policy-sentiment"],
+        "models": ["gemma3:270m", "llama3.2:3b"],
+        "use_examples": ["false", "true"],
+        "prompt_types": ["standard", "persona"],
+        "temperatures": ["None", "0.2"],
+        "top_ps": ["None"],
+        "process_textboxes": ["true"],
+    },
+    output_root="outputs",
+)
+
+print(f"Completed {len(results)} runs")
+```
+
+Custom prompt wrapper:
+
+```python
+from codebook_lab import ExperimentSpec, PromptContext, register_prompt_wrapper, run_experiment
+
+def concise_wrapper(context: PromptContext) -> str:
+    return (
+        "Annotate the text as carefully as possible.\n\n"
+        f"{context.core_prompt}\n\n"
+        f'Text:\n"{context.text}"\n\n'
+        "Response:\n"
+    )
+
+register_prompt_wrapper("concise", concise_wrapper)
+
+result = run_experiment(
+    ExperimentSpec(
+        task="policy-sentiment",
+        model="gemma3:270m",
+        prompt_type="concise",
+        country_iso_code="IRL",
+    )
+)
 ```
 
 ### 5. Inspect the outputs
@@ -121,9 +205,11 @@ That metrics log stores both annotation-quality metrics and run metadata. Depend
 
 This makes it easy to compare not just which model is most accurate, but also which setup is fastest, cheapest to run, and most energy intensive.
 
+Textbox note: normalized Levenshtein and BLEU work with the base install, but ROUGE, embedding-based cosine similarity, and BERTScore require the optional textbox extras. Install them with `python -m pip install "codebook-lab[textbox]"`.
+
 ## Experiment Configuration
 
-Most experiment setup happens through `param_grid.yaml`. The runner evaluates every combination implied by the fields in that file.
+Most multi-run setup happens through the parameter grid dictionary you pass into `run_experiment_grid(...)`.
 
 - `tasks`: which task folders to run
 - `models`: which Ollama models to evaluate (e.g. `gemma3:270m`, `llama3.2:3b`, `qwen3.5:latest`)
@@ -133,40 +219,42 @@ Most experiment setup happens through `param_grid.yaml`. The runner evaluates ev
 - `top_ps`: nucleus sampling values (leave empty for model default)
 - `process_textboxes`: whether textbox-style annotations should be generated and scored
 
-Add multiple values to any field and the runner sweeps them automatically. For a single quick run, keep one value in each field.
+When `process_textboxes` is enabled, install the optional textbox extras first if you want the full textbox metric suite:
+
+```bash
+python -m pip install "codebook-lab[textbox]"
+```
+
+Add multiple values to any field and the package sweeps them automatically. For a single quick run, keep one value in each field.
 
 ## Create Your Own Task
 
-1. Create a new folder such as `tasks/my-task/`.
-2. Annotate your data in [CodeBook Studio](https://codebook.streamlit.app/) and save the labeled file as `tasks/my-task/ground-truth.csv`.
-3. Download the codebook JSON from Studio and save it as `tasks/my-task/codebook.json`.
-4. Update `param_grid.yaml` to include your task name.
+1. Create a local folder such as `my_tasks/my-task/`.
+2. Annotate your data in [CodeBook Studio](https://codebook.streamlit.app/) and save the labeled file as `my_tasks/my-task/ground-truth.csv`.
+3. Download the codebook JSON from Studio and save it as `my_tasks/my-task/codebook.json`.
+4. Pass `task_root="my_tasks"` and `task="my-task"` into `ExperimentSpec(...)` when you run experiments.
 
-If you are still designing a task and do not yet have human-coded labels, you can still run annotation with `pipeline/annotate.py` on an unlabeled CSV and add `ground-truth.csv` later when you want to score model performance with `pipeline/metrics.py`.
-
-## Running on HPC
-
-Use `scripts/run_hpc_slurm.sh` as a starting point. It is intentionally minimal so you can adapt the module loads, conda environment, and resource requests to your own cluster.
+If you are still designing a task and do not yet have human-coded labels, you can run annotation with `codebook_lab.run_annotation(...)` on an unlabeled CSV and add `ground-truth.csv` later when you want to score model performance with `codebook_lab.run_metrics(...)`.
 
 ## Advanced Customization
 
-If you want to go beyond the default wrappers and hyperparameters, `pipeline/annotate.py` is the place to extend the pipeline.
+If you want to go beyond the default wrappers and hyperparameters, `codebook_lab/annotate.py` and `codebook_lab/prompts.py` are the main extension points.
 
-- To add new prompt wrappers beyond `standard`, `persona`, and `CoT`, extend the prompt-formatting logic in `pipeline/annotate.py` and then expose the new wrapper name through the `prompt_type` argument and `param_grid.yaml`.
-- To expose additional model hyperparameters such as `top_k`, add them to `setup_model()`, add a command-line argument in `pipeline/annotate.py`, pass them through from `scripts/run_local.sh`, and add the corresponding field to `param_grid.yaml`.
+- To add new prompt wrappers beyond `standard`, `persona`, and `CoT`, register them from Python with `register_prompt_wrapper(...)` or extend the built-in registry in `codebook_lab/prompts.py`.
+- To expose additional model hyperparameters such as `top_k`, add them to `setup_model()`, thread them through `run_annotation(...)` and `run_experiment(...)`, and add the corresponding field to the grid you pass into `run_experiment_grid(...)`.
 
 ## License
 
-This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+This project is licensed under the [GNU Affero General Public License v3.0](https://github.com/LorcanMcLaren/codebook-lab/blob/main/LICENSE).
 
 ## Citation
 
-If you use this repository in research, please cite both:
+If you use CodeBook Lab in research, please cite both:
 
-- this software repository
+- this software package
 - the associated preprint
 
-The repository includes a [`CITATION.cff`](CITATION.cff) file for the software citation used by GitHub's citation interface.
+Citation metadata is also available in the project's [`CITATION.cff`](https://github.com/LorcanMcLaren/codebook-lab/blob/main/CITATION.cff).
 
 ### Software Citation
 

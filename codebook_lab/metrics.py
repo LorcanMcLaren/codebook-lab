@@ -1,18 +1,84 @@
+import contextlib
+import importlib.util
+import io
+import logging
+from functools import lru_cache
+import warnings
+
 import pandas as pd
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, cohen_kappa_score
 import numpy as np
-import argparse
 import os
+from pathlib import Path
 import json
 from datetime import datetime
 import krippendorff
 from scipy.stats import spearmanr
 from sklearn.metrics import confusion_matrix
 
+from .types import MetricsRunResult
+
+logger = logging.getLogger(__name__)
+
+
+TEXTBOX_DEPENDENCY_GUIDANCE = (
+    "Install the optional textbox extras to enable the full textbox metric suite: "
+    "python -m pip install \"codebook-lab[textbox]\"."
+)
+
+BERT_SCORE_NUMPY_WARNING = (
+    "The given NumPy array is not writable, and PyTorch does not support non-writable tensors."
+)
+
+
+@contextlib.contextmanager
+def _quiet_optional_nlp_output():
+    """Suppress noisy but non-actionable output from optional NLP metric libraries."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=BERT_SCORE_NUMPY_WARNING, category=UserWarning)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                from transformers.utils import logging as transformers_logging
+            except ImportError:
+                transformers_logging = None
+
+            if transformers_logging is None:
+                yield
+                return
+
+            previous_verbosity = transformers_logging.get_verbosity()
+            transformers_logging.set_verbosity_error()
+            try:
+                yield
+            finally:
+                transformers_logging.set_verbosity(previous_verbosity)
+
+
+@lru_cache(maxsize=1)
+def _load_sentence_transformer_model():
+    from sentence_transformers import SentenceTransformer
+
+    with _quiet_optional_nlp_output():
+        return SentenceTransformer("all-MiniLM-L6-v2")
+
+
+@lru_cache(maxsize=1)
+def _load_bert_score_module():
+    import bert_score
+
+    return bert_score
+
+
 def extract_column_info_from_codebook(codebook_path):
     """
     Extract column names and their annotation types from the codebook file.
-    Returns a dictionary mapping column names to their annotation types and properties.
+
+    Args:
+        codebook_path: Path to a ``codebook.json`` file.
+
+    Returns:
+        Dictionary mapping ``<section_name>_<annotation_name>`` column names to
+        annotation metadata such as type, options, and Likert bounds.
     """
     with open(codebook_path, 'r') as file:
         codebook = json.load(file)
@@ -45,44 +111,49 @@ def extract_column_info_from_codebook(codebook_path):
                 
                 column_info[column_name] = properties
     
-    print(f"Extracted column info from codebook: {column_info}")
+    logger.debug("Extracted column info from codebook: %s", column_info)
     return column_info
 
 def load_data(ground_truth_path, llm_output_path, columns_to_compare):
+    """Load and align ground-truth and model-output CSV files for evaluation.
+
+    Args:
+        ground_truth_path: Path to the human-labeled reference CSV.
+        llm_output_path: Path to the model-generated annotation CSV.
+        columns_to_compare: List of annotation column names to evaluate.
+
+    Returns:
+        Combined DataFrame containing suffixed ``_gt`` and ``_llm`` columns.
+    """
     ground_truth_df = pd.read_csv(ground_truth_path)
     llm_output_df = pd.read_csv(llm_output_path)
     
-    # Print dataframe shapes
-    print(f"\nGround truth dataframe shape: {ground_truth_df.shape}")
-    print(f"LLM output dataframe shape: {llm_output_df.shape}")
+    logger.debug("Ground truth dataframe shape: %s", ground_truth_df.shape)
+    logger.debug("LLM output dataframe shape: %s", llm_output_df.shape)
     
     # Verify the row counts match
     if len(ground_truth_df) != len(llm_output_df):
-        print(f"\nWARNING: Dataframes have different numbers of rows!")
-        print(f"Ground truth rows: {len(ground_truth_df)}, LLM output rows: {len(llm_output_df)}")
-        print("Proceeding with merge based on row order, but results may be incorrect.")
+        logger.warning("Dataframes have different numbers of rows!")
+        logger.warning("Ground truth rows: %s, LLM output rows: %s", len(ground_truth_df), len(llm_output_df))
+        logger.warning("Proceeding with merge based on row order, but results may be incorrect.")
     else:
-        print(f"\nBoth dataframes have {len(ground_truth_df)} rows. Proceeding with row-based merge.")
+        logger.info("Both dataframes have %s rows. Proceeding with row-based merge.", len(ground_truth_df))
     
-    # Print unique values before merge
-    print("\nDEBUG - Before merge:")
+    logger.debug("Before merge:")
     for column in columns_to_compare:
-        print(f"\nColumn: {column}")
-        # Check if column exists in both dataframes
+        logger.debug("Column: %s", column)
         if column in ground_truth_df.columns and column in llm_output_df.columns:
-            # Convert to string and handle NaN values
             gt_values = ground_truth_df[column].fillna('').astype(str)
             llm_values = llm_output_df[column].fillna('').astype(str)
-            # Remove empty strings from the unique values
             gt_unique = sorted([x for x in gt_values.unique() if x != ''])
             llm_unique = sorted([x for x in llm_values.unique() if x != ''])
-            print("Ground truth unique values:", gt_unique)
-            print("LLM output unique values:", llm_unique)
+            logger.debug("Ground truth unique values: %s", gt_unique)
+            logger.debug("LLM output unique values: %s", llm_unique)
         else:
             if column not in ground_truth_df.columns:
-                print(f"Warning: Column '{column}' not found in ground truth dataframe")
+                logger.warning("Column '%s' not found in ground truth dataframe", column)
             if column not in llm_output_df.columns:
-                print(f"Warning: Column '{column}' not found in LLM output dataframe")
+                logger.warning("Column '%s' not found in LLM output dataframe", column)
 
     # Create new dataframe by adding suffix to column names
     gt_columns = {col: f"{col}_gt" for col in ground_truth_df.columns if col in columns_to_compare}
@@ -95,49 +166,40 @@ def load_data(ground_truth_path, llm_output_path, columns_to_compare):
     # Concatenate horizontally (cbind/hstack) based on row position
     merged_df = pd.concat([gt_renamed, llm_renamed], axis=1)
     
-    print(f"\nMerged dataframe has {len(merged_df)} rows and {merged_df.shape[1]} columns")
+    logger.debug("Merged dataframe has %s rows and %s columns", len(merged_df), merged_df.shape[1])
     
-    # Print unique values after merge
-    print("\nDEBUG - After merge:")
+    logger.debug("After merge:")
     for column in columns_to_compare:
         column_gt = f'{column}_gt'
         column_llm = f'{column}_llm'
-        
-        # Check if columns exist in merged dataframe
+
         if column_gt in merged_df.columns and column_llm in merged_df.columns:
-            print(f"\nColumn: {column}")
-            # Convert to string and handle NaN values
+            logger.debug("Column: %s", column)
             gt_values = merged_df[column_gt].fillna('').astype(str)
             llm_values = merged_df[column_llm].fillna('').astype(str)
-            # Remove empty strings from the unique values
             gt_unique = sorted([x for x in gt_values.unique() if x != ''])
             llm_unique = sorted([x for x in llm_values.unique() if x != ''])
-            print(f"Ground truth unique values: {gt_unique}")
-            print(f"LLM output unique values: {llm_unique}")
-            
-            # Print counts of each value
-            print("\nValue counts in ground truth:")
-            print(merged_df[column_gt].fillna('').astype(str).value_counts().to_string())
-            print("\nValue counts in LLM output:")
-            print(merged_df[column_llm].fillna('').astype(str).value_counts().to_string())
-            
-            # Check for any rows where the values don't match
-            # Convert both to string for comparison
+            logger.debug("Ground truth unique values: %s", gt_unique)
+            logger.debug("LLM output unique values: %s", llm_unique)
+
+            logger.debug("Value counts in ground truth:\n%s", merged_df[column_gt].fillna('').astype(str).value_counts().to_string())
+            logger.debug("Value counts in LLM output:\n%s", merged_df[column_llm].fillna('').astype(str).value_counts().to_string())
+
             gt_col = merged_df[column_gt].fillna('').astype(str)
             llm_col = merged_df[column_llm].fillna('').astype(str)
             mismatches = merged_df[gt_col != llm_col]
             if len(mismatches) > 0:
-                print(f"\nFound {len(mismatches)} mismatches for {column}. First few examples:")
+                logger.debug("Found %s mismatches for %s. First few examples:", len(mismatches), column)
                 for idx, row in mismatches.head().iterrows():
-                    print(f"Row index: {idx}")
-                    print(f"Ground truth: '{row[column_gt]}'")
-                    print(f"LLM output: '{row[column_llm]}'")
-                    print("---")
+                    logger.debug("Row index: %s", idx)
+                    logger.debug("Ground truth: '%s'", row[column_gt])
+                    logger.debug("LLM output: '%s'", row[column_llm])
+                    logger.debug("---")
         else:
             if column_gt not in merged_df.columns:
-                print(f"Warning: Column '{column_gt}' not found in merged dataframe")
+                logger.warning("Column '%s' not found in merged dataframe", column_gt)
             if column_llm not in merged_df.columns:
-                print(f"Warning: Column '{column_llm}' not found in merged dataframe")
+                logger.warning("Column '%s' not found in merged dataframe", column_llm)
 
     # Convert all columns to string type before returning
     for column in columns_to_compare:
@@ -151,24 +213,46 @@ def load_data(ground_truth_path, llm_output_path, columns_to_compare):
     return merged_df
 
 def fill_specific_missing_values(df, columns, fill_value):
+    """Fill missing values in specific DataFrame columns.
+
+    Args:
+        df: Pandas DataFrame to mutate in place.
+        columns: Iterable of column names to fill if present.
+        fill_value: Replacement value for missing entries.
+    """
     for column in columns:
         if column in df.columns:
             df[column] = df[column].fillna(fill_value)
         else:
-            print(f"Warning: Column '{column}' not found in DataFrame.")
+            logger.warning("Column '%s' not found in DataFrame.", column)
 
 def fill_missing_values(df, columns_to_compare, fill_value="unknown"):
+    """Fill missing values in a list of DataFrame columns if they exist.
+
+    Args:
+        df: Pandas DataFrame to mutate in place.
+        columns_to_compare: Iterable of column names to fill if present.
+        fill_value: Replacement value for missing entries.
+    """
     for column in columns_to_compare:
         if column in df.columns:
             df[column] = df[column].fillna(fill_value)
         else:
-            print(f"Warning: Column '{column}' not found in DataFrame.")
+            logger.warning("Column '%s' not found in DataFrame.", column)
 
 def calculate_percentage_agreement(y_true, y_pred):
+    """Compute exact-match agreement between two aligned series."""
     return sum(y_true == y_pred) / len(y_true)
 
 def read_emissions_data(emissions_file):
-    """Read emissions and energy data from the emissions CSV file."""
+    """Read emissions and energy metadata from a CodeCarbon CSV file.
+
+    Args:
+        emissions_file: Path to ``emissions.csv`` produced during annotation.
+
+    Returns:
+        Tuple of ``(emissions, energy_consumed, cpu_model, gpu_model)``.
+    """
     try:
         emissions_df = pd.read_csv(emissions_file)
         if len(emissions_df) > 0:
@@ -177,37 +261,55 @@ def read_emissions_data(emissions_file):
                    latest_row['cpu_model'], latest_row['gpu_model'])
         return None, None, None, None
     except Exception as e:
-        print(f"Error reading emissions file: {str(e)}")
+        logger.warning("Error reading emissions file: %s", e)
         return None, None, None, None
     
 def read_timing_data(timing_file):
-    """Read timing data from the timing JSON file."""
+    """Read inference timing statistics from a JSON sidecar file.
+
+    Args:
+        timing_file: Path to ``timing_data.json``.
+
+    Returns:
+        Tuple of ``(total_inference_time, avg_inference_time)``.
+    """
     try:
         with open(timing_file, 'r') as file:
             timing_data = json.load(file)
             return (timing_data.get('total_inference_time', None), 
                    timing_data.get('avg_inference_time', None))
     except Exception as e:
-        print(f"Error reading timing file: {str(e)}")
+        logger.warning("Error reading timing file: %s", e)
         return None, None
     
 def read_char_counts(char_counts_file):
-    """Read character count data from the JSON file."""
+    """Read prompt and response character counts from a JSON sidecar file.
+
+    Args:
+        char_counts_file: Path to ``char_counts.json``.
+
+    Returns:
+        Tuple of ``(input_chars, output_chars)``.
+    """
     try:
         with open(char_counts_file, 'r') as file:
             char_counts = json.load(file)
             return (char_counts.get('input_chars', None), 
                    char_counts.get('output_chars', None))
     except Exception as e:
-        print(f"Error reading character counts file: {str(e)}")
+        logger.warning("Error reading character counts file: %s", e)
         return None, None
 
 def quadratic_weighted_kappa(y_true, y_pred):
     """
     Calculate the quadratic weighted kappa.
     
-    This metric gives partial credit for "near misses" based on how far apart the ratings are,
-    which is ideal for ordinal scales like Likert.
+    Args:
+        y_true: Iterable of gold ordinal labels.
+        y_pred: Iterable of predicted ordinal labels.
+
+    Returns:
+        Quadratic weighted kappa as a float, or ``nan`` when it cannot be computed.
     """
     # Convert to numeric if not already
     y_true = pd.to_numeric(y_true, errors='coerce')
@@ -255,6 +357,17 @@ def quadratic_weighted_kappa(y_true, y_pred):
     return k
 
 def evaluate_performance(merged_df, columns_to_compare, column_info, process_textbox=False):
+    """Compute evaluation metrics for each requested annotation column.
+
+    Args:
+        merged_df: DataFrame returned by :func:`load_data`.
+        columns_to_compare: List of annotation columns to evaluate.
+        column_info: Metadata mapping produced by :func:`extract_column_info_from_codebook`.
+        process_textbox: Whether textbox similarity metrics should be calculated.
+
+    Returns:
+        Tuple of metric dictionaries and report text keyed by annotation column name.
+    """
     # Initialize all metric dictionaries with default NaN values for all columns
     accuracy_scores = {col: float('nan') for col in columns_to_compare}
     precision_scores = {col: float('nan') for col in columns_to_compare}
@@ -286,17 +399,17 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
         
         # Check if both columns exist in the dataframe
         if column_gt not in merged_df.columns or column_llm not in merged_df.columns:
-            print(f"Skipping column '{column}' as one or both corresponding columns are missing in the merged dataframe")
+            logger.warning("Skipping column '%s' as one or both corresponding columns are missing in the merged dataframe", column)
             reports[column] = "Column missing in dataframe."
             continue
         
         # Get annotation type
         annotation_type = column_info.get(column, {}).get('type', 'dropdown')
-        print(f"\nDEBUG - Processing column: {column} (Type: {annotation_type})")
+        logger.debug("Processing column: %s (Type: %s)", column, annotation_type)
         
         # Skip textbox annotations if process_textbox is False
         if annotation_type == 'textbox' and not process_textbox:
-            print(f"Skipping textbox column '{column}' as process_textbox is False")
+            logger.info("Skipping textbox column '%s' as process_textbox is False", column)
             reports[column] = "Textbox processing skipped."
             continue
             
@@ -305,14 +418,14 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
 
         # Handle values based on annotation type
         if annotation_type == 'checkbox':
-            print("Handling checkbox column - converting to binary values")
+            logger.debug("Handling checkbox column - converting to binary values")
             y_true = y_true.fillna('0')
             y_pred = y_pred.fillna('0')
             # Ensure values are '0' or '1'
             y_true = y_true.map(lambda x: '1' if str(x).lower() in ['1', 'true', 'yes', 'checked'] else '0')
             y_pred = y_pred.map(lambda x: '1' if str(x).lower() in ['1', 'true', 'yes', 'checked'] else '0')
         elif annotation_type == 'likert':
-            print("Handling likert column - calculating both ordinal and classification metrics")
+            logger.debug("Handling likert column - calculating both ordinal and classification metrics")
             # Get min and max values from codebook
             min_value = column_info[column].get('min_value', 0)
             max_value = column_info[column].get('max_value', 5)
@@ -347,7 +460,7 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
                 y_true = y_true[valid_indices]
                 y_pred = y_pred[valid_indices]
         elif annotation_type == 'textbox':
-            print("Handling textbox column - calculating text similarity metrics")
+            logger.debug("Handling textbox column - calculating text similarity metrics")
             # Process textbox with specialized metrics
             try:
                 textbox_metrics = evaluate_textbox_performance(y_true, y_pred)
@@ -371,33 +484,27 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
                     reports[column] = (
                         "Textbox field, available metrics calculated. "
                         f"Missing packages for some metrics: {', '.join(missing_dependencies)}. "
-                        "Install requirements.txt to enable the full textbox metric suite."
+                        f"{TEXTBOX_DEPENDENCY_GUIDANCE}"
                     )
                 else:
                     reports[column] = "Textbox field, specialized metrics calculated."
             except Exception as e:
-                print(f"Error calculating textbox metrics for column '{column}':")
-                print(f"Exception: {str(e)}")
+                logger.warning("Error calculating textbox metrics for column '%s': %s", column, e)
                 reports[column] = f"Error in textbox metrics: {str(e)}"
 
-        # Print initial data stats
-        print(f"Initial data shape - y_true: {y_true.shape}, y_pred: {y_pred.shape}")
-        
-        # Handle NaN values when getting unique values
+        logger.debug("Initial data shape - y_true: %s, y_pred: %s", y_true.shape, y_pred.shape)
+
         true_unique = sorted([x for x in y_true.unique() if pd.notna(x)])
         pred_unique = sorted([x for x in y_pred.unique() if pd.notna(x)])
-        print("Initial unique values in y_true:", true_unique)
-        print("Initial unique values in y_pred:", pred_unique)
-        
-        # Print detailed counts
-        print("\nDetailed value counts:")
-        print("Ground truth:")
-        print(y_true.value_counts(dropna=False).to_string())
-        print("\nPredictions:")
-        print(y_pred.value_counts(dropna=False).to_string())
+        logger.debug("Initial unique values in y_true: %s", true_unique)
+        logger.debug("Initial unique values in y_pred: %s", pred_unique)
+
+        logger.debug("Detailed value counts:")
+        logger.debug("Ground truth:\n%s", y_true.value_counts(dropna=False).to_string())
+        logger.debug("Predictions:\n%s", y_pred.value_counts(dropna=False).to_string())
 
         if len(y_true) == 0:
-            print(f"Warning: No valid entries for column '{column}'")
+            logger.warning("No valid entries for column '%s'", column)
             reports[column] = "No valid data for metrics calculation."
             continue
 
@@ -421,7 +528,7 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
             true_labels = set(x for x in y_true.unique() if pd.notna(x))
             pred_labels = set(x for x in y_pred.unique() if pd.notna(x))
             all_labels = sorted(true_labels | pred_labels)
-            print("\nAll unique labels:", all_labels)
+            logger.debug("All unique labels: %s", all_labels)
             
             # Calculate metrics
             accuracy_scores[column] = accuracy_score(y_true_clean, y_pred_clean)
@@ -451,12 +558,9 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
                                                  labels=all_labels,
                                                  zero_division=0)
         except Exception as e:
-            print(f"Error processing column '{column}':")
-            print(f"Exception type: {type(e).__name__}")
-            print(f"Exception message: {str(e)}")
-            print("Current state:")
-            print(f"y_true sample: {y_true.head().to_string()}")
-            print(f"y_pred sample: {y_pred.head().to_string()}")
+            logger.warning("Error processing column '%s': %s: %s", column, type(e).__name__, e)
+            logger.debug("Current state - y_true sample:\n%s", y_true.head().to_string())
+            logger.debug("Current state - y_pred sample:\n%s", y_pred.head().to_string())
             reports[column] = f"Error: {str(e)}"
 
     return (accuracy_scores, precision_scores, recall_scores, f1_scores, 
@@ -471,6 +575,14 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
 def evaluate_textbox_performance(y_true, y_pred):
     """
     Calculate similarity metrics for textbox annotations.
+
+    Args:
+        y_true: Pandas Series of reference textbox annotations.
+        y_pred: Pandas Series of predicted textbox annotations.
+
+    Returns:
+        Dictionary of textbox similarity metrics plus an internal
+        ``_missing_dependencies`` list when optional packages are unavailable.
     """
     missing_dependencies = []
 
@@ -494,17 +606,11 @@ def evaluate_textbox_performance(y_true, y_pred):
         rouge_scorer = None
         missing_dependencies.append('rouge-score')
 
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        SentenceTransformer = None
-        missing_dependencies.append('sentence-transformers')
+    if importlib.util.find_spec("sentence_transformers") is None:
+        missing_dependencies.append("sentence-transformers")
 
-    try:
-        import bert_score
-    except ImportError:
-        bert_score = None
-        missing_dependencies.append('bert-score')
+    if importlib.util.find_spec("bert_score") is None:
+        missing_dependencies.append("bert-score")
 
     try:
         import torch
@@ -516,9 +622,9 @@ def evaluate_textbox_performance(y_true, y_pred):
     y_true_norm = y_true.fillna('').str.lower().str.strip()
     y_pred_norm = y_pred.fillna('').str.lower().str.strip()
     
-    print(f"Starting textbox evaluation with {len(y_true)} entries")
-    print(f"Non-empty ground truth: {sum(y_true_norm != '')}")
-    print(f"Non-empty predictions: {sum(y_pred_norm != '')}")
+    logger.info("Starting textbox evaluation with %s entries", len(y_true))
+    logger.debug("Non-empty ground truth: %s", sum(y_true_norm != ''))
+    logger.debug("Non-empty predictions: %s", sum(y_pred_norm != ''))
     
     # Initialize containers for individual scores
     norm_levenshtein_scores = []
@@ -546,7 +652,7 @@ def evaluate_textbox_performance(y_true, y_pred):
                 norm_lev_sim = 1 - (lev_dist / max_len)
                 norm_levenshtein_scores.append(norm_lev_sim)
     
-    print(f"Found {len(valid_refs)} valid pairs for batch metrics")
+    logger.debug("Found %s valid pairs for batch metrics", len(valid_refs))
     
     # Skip batch metrics if no valid pairs
     if not valid_refs:
@@ -581,14 +687,14 @@ def evaluate_textbox_performance(y_true, y_pred):
                                              smoothing_function=smoothing_function)
                         bleu_scores.append(score)
                     except Exception as e:
-                        print(f"Individual BLEU error: {str(e)}")
+                        logger.debug("Individual BLEU error: %s", e)
 
             bleu_score = np.mean(bleu_scores) if bleu_scores else float('nan')
-            print(f"Calculated {len(bleu_scores)} BLEU scores, mean: {bleu_score}")
+            logger.debug("Calculated %s BLEU scores, mean: %s", len(bleu_scores), bleu_score)
         except Exception as e:
-            print(f"BLEU calculation error: {str(e)}")
+            logger.warning("BLEU calculation error: %s", e)
     else:
-        print("Skipping BLEU calculation because nltk is not installed.")
+        logger.info("Skipping BLEU calculation because nltk is not installed.")
     
     # 3. ROUGE Score calculation
     rouge1_f = rouge2_f = rougeL_f = float('nan')
@@ -607,21 +713,21 @@ def evaluate_textbox_performance(y_true, y_pred):
                     rouge2_scores.append(score['rouge2'].fmeasure)
                     rougeL_scores.append(score['rougeL'].fmeasure)
                 except Exception as e:
-                    print(f"Individual ROUGE error: {str(e)}")
+                    logger.debug("Individual ROUGE error: %s", e)
 
             rouge1_f = np.mean(rouge1_scores) if rouge1_scores else float('nan')
             rouge2_f = np.mean(rouge2_scores) if rouge2_scores else float('nan')
             rougeL_f = np.mean(rougeL_scores) if rougeL_scores else float('nan')
-            print(f"Calculated {len(rouge1_scores)} ROUGE scores")
+            logger.debug("Calculated %s ROUGE scores", len(rouge1_scores))
         except Exception as e:
-            print(f"ROUGE calculation error: {str(e)}")
+            logger.warning("ROUGE calculation error: %s", e)
     else:
-        print("Skipping ROUGE calculation because rouge-score is not installed.")
+        logger.info("Skipping ROUGE calculation because rouge-score is not installed.")
     
     # 4. Cosine Similarity with Sentence Embeddings
-    if SentenceTransformer is not None and torch is not None:
+    if "sentence-transformers" not in missing_dependencies and torch is not None:
         try:
-            model = SentenceTransformer('all-MiniLM-L6-v2')
+            model = _load_sentence_transformer_model()
 
             true_embeddings = model.encode(valid_refs, convert_to_tensor=True)
             pred_embeddings = model.encode(valid_cands, convert_to_tensor=True)
@@ -632,35 +738,38 @@ def evaluate_textbox_performance(y_true, y_pred):
                     pred_embeddings[i].unsqueeze(0)
                 ).item()
                 cosine_scores.append(cos_sim)
-            print(f"Calculated {len(cosine_scores)} cosine similarity scores")
+            logger.debug("Calculated %s cosine similarity scores", len(cosine_scores))
         except Exception as e:
-            print(f"Embedding error: {str(e)}")
+            logger.warning("Embedding error: %s", e)
     else:
-        print("Skipping cosine similarity because sentence-transformers and/or torch are not installed.")
+        logger.info("Skipping cosine similarity because sentence-transformers and/or torch are not installed.")
     
     # 5. BERTScore calculation
     bertscore_p = bertscore_r = bertscore_f1 = float('nan')
-    if bert_score is not None and torch is not None:
+    if "bert-score" not in missing_dependencies and torch is not None:
         try:
+            bert_score = _load_bert_score_module()
+
             # Calculate BERTScore directly
-            P, R, F1 = bert_score.score(
-                valid_cands,
-                valid_refs,
-                lang="en",
-                model_type="roberta-large",
-                rescale_with_baseline=True,
-                verbose=False
-            )
+            with _quiet_optional_nlp_output():
+                P, R, F1 = bert_score.score(
+                    valid_cands,
+                    valid_refs,
+                    lang="en",
+                    model_type="roberta-large",
+                    rescale_with_baseline=True,
+                    verbose=False
+                )
 
             # Convert tensor outputs to Python floats
             bertscore_p = torch.mean(P).item() if len(P) > 0 else float('nan')
             bertscore_r = torch.mean(R).item() if len(R) > 0 else float('nan')
             bertscore_f1 = torch.mean(F1).item() if len(F1) > 0 else float('nan')
-            print(f"Calculated BERTScore metrics")
+            logger.debug("Calculated BERTScore metrics")
         except Exception as e:
-            print(f"BERTScore calculation error: {str(e)}")
+            logger.warning("BERTScore calculation error: %s", e)
     else:
-        print("Skipping BERTScore because bert-score and/or torch are not installed.")
+        logger.info("Skipping BERTScore because bert-score and/or torch are not installed.")
     
     # Gather all results
     results = {
@@ -676,12 +785,16 @@ def evaluate_textbox_performance(y_true, y_pred):
         '_missing_dependencies': missing_dependencies
     }
     
-    print("Textbox metrics calculated successfully:")
+    logger.info("Textbox metrics calculated successfully")
     for metric, value in results.items():
         if metric != '_missing_dependencies':
-            print(f"  {metric}: {value}")
+            logger.debug("  %s: %s", metric, value)
     if missing_dependencies:
-        print(f"Textbox metrics missing dependencies: {', '.join(sorted(set(missing_dependencies)))}")
+        logger.warning(
+            "Textbox metrics missing dependencies: %s. %s",
+            ", ".join(sorted(set(missing_dependencies))),
+            TEXTBOX_DEPENDENCY_GUIDANCE,
+        )
     
     return results
 
@@ -699,8 +812,49 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
                          total_inference_time=None, avg_inference_time=None,
                          input_chars=None, output_chars=None,
                          timestamp=None, experiment_directory=None):
-    """
-    Append metrics results to a CSV file, storing only metrics relevant to each field type.
+    """Append one experiment's metrics to the aggregate CSV log.
+
+    Args:
+        output_csv: Path to the aggregate metrics CSV to create or update.
+        label: Experiment label, usually the task name.
+        model_id: Stable identifier for the model and prompt configuration.
+        quantization_type: Optional quantization metadata string.
+        temperature: Optional temperature metadata value.
+        top_p: Optional top-p metadata value.
+        codebook_path: Path to the codebook used for the experiment.
+        columns_to_compare: Annotation columns included in the evaluation.
+        accuracy_scores: Per-column accuracy values.
+        precision_scores: Per-column precision values.
+        recall_scores: Per-column recall values.
+        f1_scores: Per-column F1 values.
+        cohen_kappa_scores: Per-column Cohen's kappa values.
+        krippendorff_alpha_scores: Per-column Krippendorff's alpha values.
+        percentage_agreement_scores: Per-column exact agreement values.
+        spearman_corr_scores: Per-column Spearman correlations for Likert fields.
+        quadratic_kappa_scores: Per-column quadratic weighted kappa values.
+        norm_levenshtein_scores: Per-column normalized Levenshtein scores.
+        bleu_scores: Per-column BLEU scores.
+        rouge1_f_scores: Per-column ROUGE-1 F values.
+        rouge2_f_scores: Per-column ROUGE-2 F values.
+        rougeL_f_scores: Per-column ROUGE-L F values.
+        cosine_scores: Per-column cosine similarity scores.
+        bertscore_p_scores: Per-column BERTScore precision values.
+        bertscore_r_scores: Per-column BERTScore recall values.
+        bertscore_f1_scores: Per-column BERTScore F1 values.
+        column_info: Annotation metadata mapping from the codebook.
+        prompt_type: Optional prompt wrapper name stored as metadata.
+        use_examples: Optional boolean-like metadata flag.
+        process_textbox: Optional boolean-like metadata flag.
+        emissions: Optional emissions estimate in kilograms of CO2 equivalent.
+        energy_consumed: Optional energy consumption in kilowatt-hours.
+        cpu_model: Optional CPU model string.
+        gpu_model: Optional GPU model string.
+        total_inference_time: Optional total inference time in seconds.
+        avg_inference_time: Optional average inference time in seconds.
+        input_chars: Optional total prompt character count.
+        output_chars: Optional total response character count.
+        timestamp: Optional timestamp string.
+        experiment_directory: Optional path to the per-run output directory.
     """
     if timestamp is None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -905,169 +1059,364 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
         df.to_csv(output_csv, index=False)
  
 def write_classification_reports(output_report_file, columns_to_compare, reports):
+    """Write human-readable per-column classification reports to a text file.
+
+    Args:
+        output_report_file: Destination text file path.
+        columns_to_compare: Ordered list of annotation columns to include.
+        reports: Mapping of annotation column name to report text.
+    """
     with open(output_report_file, mode='w') as file:
         for column in columns_to_compare:
             file.write(f"Classification Report for '{column}':\n")
             file.write(reports[column])
             file.write("\n" + ("-" * 50) + "\n")
 
-def main():
-    parser = argparse.ArgumentParser(description='Evaluate LLM performance metrics.')
-    parser.add_argument('ground_truth_csv', type=str, help='Path to the ground truth CSV file.')
-    parser.add_argument('llm_output_csv', type=str, help='Path to the LLM output CSV file.')
-    
-    # Make columns argument optional by adding a --columns flag
-    parser.add_argument('--columns', type=str, nargs='+', 
-                        help='Optional: specific columns to compare between ground truth and LLM output. If not provided, columns will be extracted from the codebook.')
-    
-    parser.add_argument('--label', type=str, required=True, help='Label for the experiment.')
-    parser.add_argument('--output_csv', type=str, required=True, help='Path to the CSV file where metrics will be recorded.')
-    parser.add_argument('--model_id', type=str, required=True, help='Model ID used in the experiment.')
-    parser.add_argument('--quantization_type', type=str, required=False, default=None, help='Quantization type used in the experiment.')
-    parser.add_argument('--temperature', type=str, required=False, default=None, help='Temperature used in the experiment.')
-    parser.add_argument('--top_p', type=str, required=False, default=None, help='Top-p value used in the experiment.')
-    parser.add_argument('--prompt_type', type=str, required=False, default=None, help='Prompt type used in the experiment.')
-    parser.add_argument('--use_examples', type=str, required=False, default=None, help='Whether examples were used in the experiment.')
-    parser.add_argument('--process_textbox', type=str, required=False, default='false', help='Whether to include textbox annotations in metrics calculation.')
-    parser.add_argument('--codebook_path', type=str, required=True, help='Path to the codebook file used in the experiment.')
-    parser.add_argument('--report_file', type=str, required=True, help='Path to the text file where classification reports will be recorded.')
-    parser.add_argument('--emissions_file', type=str, required=False, help='Path to the emissions CSV file.')
-    parser.add_argument('--experiment_directory', type=str, required=False, default=None, help='Directory where experiment outputs are stored.')
-    parser.add_argument('--timestamp', type=str, required=False, default=None, help='Timestamp for the experiment.')
-    parser.add_argument('--timing_file', type=str, required=False, help='Path to the timing JSON file.')
-    parser.add_argument('--char_counts_file', type=str, required=False, help='Path to the character counts JSON file.')
 
-    args = parser.parse_args()
+def _build_metrics_by_column(
+    columns_to_compare,
+    column_info,
+    accuracy_scores,
+    precision_scores,
+    recall_scores,
+    f1_scores,
+    cohen_kappa_scores,
+    krippendorff_alpha_scores,
+    percentage_agreement_scores,
+    spearman_corr_scores,
+    quadratic_kappa_scores,
+    norm_levenshtein_scores,
+    bleu_scores,
+    rouge1_f_scores,
+    rouge2_f_scores,
+    rougeL_f_scores,
+    cosine_scores,
+    bertscore_p_scores,
+    bertscore_r_scores,
+    bertscore_f1_scores,
+):
+    """Assemble a compact nested metrics dictionary keyed by column name.
 
-    # Process boolean flags
-    process_textbox = args.process_textbox.lower() in ('true', 'yes', '1', 't', 'y')
+    Args:
+        columns_to_compare: Ordered list of annotation columns to summarize.
+        column_info: Annotation metadata mapping from the codebook.
+        accuracy_scores: Per-column accuracy values.
+        precision_scores: Per-column precision values.
+        recall_scores: Per-column recall values.
+        f1_scores: Per-column F1 values.
+        cohen_kappa_scores: Per-column Cohen's kappa values.
+        krippendorff_alpha_scores: Per-column Krippendorff's alpha values.
+        percentage_agreement_scores: Per-column exact agreement values.
+        spearman_corr_scores: Per-column Spearman correlations.
+        quadratic_kappa_scores: Per-column quadratic weighted kappa values.
+        norm_levenshtein_scores: Per-column normalized Levenshtein scores.
+        bleu_scores: Per-column BLEU scores.
+        rouge1_f_scores: Per-column ROUGE-1 F values.
+        rouge2_f_scores: Per-column ROUGE-2 F values.
+        rougeL_f_scores: Per-column ROUGE-L F values.
+        cosine_scores: Per-column cosine similarity values.
+        bertscore_p_scores: Per-column BERTScore precision values.
+        bertscore_r_scores: Per-column BERTScore recall values.
+        bertscore_f1_scores: Per-column BERTScore F1 values.
 
-    # Extract model name from the model ID
-    model_name = os.path.basename(args.model_id)
+    Returns:
+        Nested metrics dictionary keyed by annotation column name.
+    """
+    metrics_by_column = {}
+    for column in columns_to_compare:
+        annotation_type = column_info.get(column, {}).get('type', 'dropdown')
+        column_metrics = {
+            "annotation_type": annotation_type,
+            "percentage_agreement": percentage_agreement_scores[column],
+        }
 
-    # Read emissions data if provided
+        if annotation_type in ['dropdown', 'checkbox', 'likert']:
+            column_metrics.update({
+                "accuracy": accuracy_scores[column],
+                "precision": precision_scores[column],
+                "recall": recall_scores[column],
+                "f1": f1_scores[column],
+                "cohen_kappa": cohen_kappa_scores[column],
+                "krippendorff_alpha": krippendorff_alpha_scores[column],
+            })
+
+        if annotation_type == 'likert':
+            column_metrics.update({
+                "spearman_corr": spearman_corr_scores[column],
+                "quadratic_kappa": quadratic_kappa_scores[column],
+            })
+
+        if annotation_type == 'textbox':
+            column_metrics.update({
+                "norm_levenshtein": norm_levenshtein_scores[column],
+                "bleu": bleu_scores[column],
+                "rouge1_f": rouge1_f_scores[column],
+                "rouge2_f": rouge2_f_scores[column],
+                "rougeL_f": rougeL_f_scores[column],
+                "cosine_similarity": cosine_scores[column],
+                "bertscore_precision": bertscore_p_scores[column],
+                "bertscore_recall": bertscore_r_scores[column],
+                "bertscore_f1": bertscore_f1_scores[column],
+            })
+
+        metrics_by_column[column] = column_metrics
+
+    return metrics_by_column
+
+
+def _format_metric_value(value) -> str:
+    """Format a scalar metric for compact human-readable summaries."""
+    if value is None:
+        return "n/a"
+    try:
+        if pd.isna(value):
+            return "n/a"
+    except TypeError:
+        pass
+
+    if isinstance(value, (int, float, np.floating)):
+        return f"{float(value):.3f}"
+    return str(value)
+
+
+def _format_count_value(value) -> str:
+    """Format integer-like counters for human-readable summaries."""
+    if value is None:
+        return "n/a"
+    try:
+        if pd.isna(value):
+            return "n/a"
+    except TypeError:
+        pass
+    return f"{int(value):,}"
+
+
+def format_metrics_summary(
+    metrics_by_column: dict[str, dict],
+    *,
+    total_inference_time=None,
+    avg_inference_time=None,
+    input_chars=None,
+    output_chars=None,
+    energy_consumed=None,
+    emissions=None,
+    cpu_model=None,
+    gpu_model=None,
+) -> str:
+    """Render a compact plain-text summary of performance and efficiency metrics."""
+    if not metrics_by_column:
+        return "No metrics were produced."
+
+    lines = ["Run Summary", "", "Performance"]
+    for column, metrics in metrics_by_column.items():
+        annotation_type = metrics.get("annotation_type", "unknown")
+        if annotation_type == "textbox":
+            metric_order = [
+                ("agreement", "percentage_agreement"),
+                ("levenshtein", "norm_levenshtein"),
+                ("bleu", "bleu"),
+                ("rougeL", "rougeL_f"),
+                ("cosine", "cosine_similarity"),
+                ("bertscore_f1", "bertscore_f1"),
+            ]
+        elif annotation_type == "likert":
+            metric_order = [
+                ("agreement", "percentage_agreement"),
+                ("accuracy", "accuracy"),
+                ("f1", "f1"),
+                ("spearman", "spearman_corr"),
+                ("quadratic_kappa", "quadratic_kappa"),
+            ]
+        else:
+            metric_order = [
+                ("agreement", "percentage_agreement"),
+                ("accuracy", "accuracy"),
+                ("f1", "f1"),
+                ("kappa", "cohen_kappa"),
+                ("alpha", "krippendorff_alpha"),
+            ]
+
+        rendered = ", ".join(
+            f"{label}={_format_metric_value(metrics.get(key))}"
+            for label, key in metric_order
+            if key in metrics
+        )
+        lines.append(f"- {column} [{annotation_type}]: {rendered}")
+
+    lines.extend([
+        "",
+        "Efficiency",
+        f"- Total inference time (s): {_format_metric_value(total_inference_time)}",
+        f"- Average inference time per annotation (s): {_format_metric_value(avg_inference_time)}",
+        f"- Prompt characters: {_format_count_value(input_chars)}",
+        f"- Output characters: {_format_count_value(output_chars)}",
+        f"- Energy consumed (kWh): {_format_metric_value(energy_consumed)}",
+        f"- Emissions (kg CO2eq): {_format_metric_value(emissions)}",
+    ])
+
+    if cpu_model:
+        lines.append(f"- CPU: {cpu_model}")
+    if gpu_model and str(gpu_model).lower() != "none":
+        lines.append(f"- GPU: {gpu_model}")
+
+    return "\n".join(lines)
+
+def run_metrics(
+    *,
+    ground_truth_csv,
+    llm_output_csv,
+    label,
+    output_csv,
+    model_id,
+    codebook_path,
+    report_file,
+    columns=None,
+    quantization_type=None,
+    temperature=None,
+    top_p=None,
+    prompt_type=None,
+    use_examples=None,
+    process_textbox=False,
+    emissions_file=None,
+    experiment_directory=None,
+    timestamp=None,
+    timing_file=None,
+    char_counts_file=None,
+):
+    """Evaluate one model-output CSV against ground truth and persist the results.
+
+    Args:
+        ground_truth_csv: Path to the human-labeled reference CSV.
+        llm_output_csv: Path to the model-generated annotation CSV.
+        label: Experiment label written to the metrics CSV, usually the task name.
+        output_csv: Path to the aggregate metrics CSV to create or update.
+        model_id: Stable identifier for the model and prompt configuration.
+        codebook_path: Path to the codebook used for the run.
+        report_file: Path to the per-column report text file.
+        columns: Optional subset of annotation column names to evaluate.
+        quantization_type: Optional quantization metadata string.
+        temperature: Optional temperature metadata value.
+        top_p: Optional top-p metadata value.
+        prompt_type: Optional prompt wrapper name stored as metadata.
+        use_examples: Optional boolean-like metadata flag.
+        process_textbox: Whether textbox metrics should be computed.
+        emissions_file: Optional path to ``emissions.csv``.
+        experiment_directory: Optional path to the per-run output directory.
+        timestamp: Optional timestamp string.
+        timing_file: Optional path to ``timing_data.json``.
+        char_counts_file: Optional path to ``char_counts.json``.
+
+    Returns:
+        :class:`codebook_lab.types.MetricsRunResult` for the completed evaluation.
+    """
+    process_textbox = str(process_textbox).lower() in ('true', 'yes', '1', 't', 'y')
+
+    output_csv = Path(output_csv)
+    report_file = Path(report_file)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+
     emissions = energy_consumed = cpu_model = gpu_model = None
-    if args.emissions_file:
-        emissions, energy_consumed, cpu_model, gpu_model = read_emissions_data(args.emissions_file)
+    if emissions_file:
+        emissions, energy_consumed, cpu_model, gpu_model = read_emissions_data(emissions_file)
 
-    # Read timing data if provided
     total_inference_time = avg_inference_time = None
-    if args.timing_file:
-        total_inference_time, avg_inference_time = read_timing_data(args.timing_file)
-        
-    # Read character count data if provided
+    if timing_file:
+        total_inference_time, avg_inference_time = read_timing_data(timing_file)
+
     input_chars = output_chars = None
-    if args.char_counts_file:
-        input_chars, output_chars = read_char_counts(args.char_counts_file)
+    if char_counts_file:
+        input_chars, output_chars = read_char_counts(char_counts_file)
 
-    # Extract column info from codebook
-    column_info = extract_column_info_from_codebook(args.codebook_path)
-    
-    # Determine columns to compare
-    columns_to_compare = args.columns
+    column_info = extract_column_info_from_codebook(codebook_path)
+    columns_to_compare = list(columns) if columns else list(column_info.keys())
     if not columns_to_compare:
-        print("No columns specified, extracting columns from codebook...")
-        columns_to_compare = list(column_info.keys())
-        if not columns_to_compare:
-            print("Error: No columns could be extracted from codebook.")
-            return
+        raise ValueError("No columns could be extracted from the codebook and none were provided.")
 
-    merged_df = load_data(args.ground_truth_csv, args.llm_output_csv, columns_to_compare)
-    
-    # Adjust column names for fill_missing_values
+    merged_df = load_data(ground_truth_csv, llm_output_csv, columns_to_compare)
     all_columns = [f'{col}_gt' for col in columns_to_compare] + [f'{col}_llm' for col in columns_to_compare]
     fill_missing_values(merged_df, all_columns, fill_value='')
 
-    # Evaluate performance with the updated metrics
     results = evaluate_performance(merged_df, columns_to_compare, column_info, process_textbox)
-    
-    # Unpack results
-    (accuracy_scores, precision_scores, recall_scores, f1_scores, 
-     cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores, 
-     spearman_corr_scores, quadratic_kappa_scores, 
-     norm_levenshtein_scores, bleu_scores, 
-     rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
-     cosine_scores, 
-     bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
-     reports) = results
-
-    # Print metrics including emissions data
-    print("\n==== METRIC RESULTS ====")
-    for column in columns_to_compare:
-        annotation_type = column_info.get(column, {}).get('type', 'dropdown')
-        print(f"\nMetrics for '{column}' (Type: {annotation_type}):")
-        
-        # Print metrics based on annotation type
-        if annotation_type == 'likert':
-            print(f"  Spearman Correlation: {spearman_corr_scores[column]:.4f}")
-            print(f"  Quadratic Weighted Kappa: {quadratic_kappa_scores[column]:.4f}")
-            print(f"  Percentage Agreement: {percentage_agreement_scores[column]:.4f}")
-            print(f"  Accuracy:  {accuracy_scores[column]:.4f}")
-            print(f"  Precision: {precision_scores[column]:.4f}")
-            print(f"  Recall:    {recall_scores[column]:.4f}")
-            print(f"  F1 Score:  {f1_scores[column]:.4f}")
-            print(f"  Cohen's Kappa: {cohen_kappa_scores[column]:.4f}")
-            print(f"  Krippendorff's Alpha: {krippendorff_alpha_scores[column]:.4f}")
-        elif annotation_type == 'textbox' and process_textbox:
-            print(f"  Percentage Agreement: {percentage_agreement_scores[column]:.4f}")
-            print(f"  Normalized Levenshtein: {norm_levenshtein_scores[column]:.4f}")
-            print(f"  BLEU Score: {bleu_scores[column]:.4f}")
-            print(f"  ROUGE-1 F1: {rouge1_f_scores[column]:.4f}")
-            print(f"  ROUGE-2 F1: {rouge2_f_scores[column]:.4f}")
-            print(f"  ROUGE-L F1: {rougeL_f_scores[column]:.4f}")
-            print(f"  Cosine Similarity: {cosine_scores[column]:.4f}")
-            print(f"  BERTScore Precision: {bertscore_p_scores[column]:.4f}")
-            print(f"  BERTScore Recall: {bertscore_r_scores[column]:.4f}")
-            print(f"  BERTScore F1: {bertscore_f1_scores[column]:.4f}")
-        elif annotation_type == 'textbox' and not process_textbox:
-            print("  Textbox processing skipped.")
-        else:  # dropdown or checkbox
-            print(f"  Accuracy:  {accuracy_scores[column]:.4f}")
-            print(f"  Precision: {precision_scores[column]:.4f}")
-            print(f"  Recall:    {recall_scores[column]:.4f}")
-            print(f"  F1 Score:  {f1_scores[column]:.4f}")
-            print(f"  Cohen's Kappa: {cohen_kappa_scores[column]:.4f}")
-            print(f"  Krippendorff's Alpha: {krippendorff_alpha_scores[column]:.4f}")
-            print(f"  Percentage Agreement: {percentage_agreement_scores[column]:.4f}")
-
-
-    if emissions is not None:
-        print(f"\nEmissions: {emissions:.6e} kgCO2eq")
-    if energy_consumed is not None:
-        print(f"Energy consumed: {energy_consumed:.6e} kWh")
-    if total_inference_time is not None:
-        print(f"Total inference time: {total_inference_time:.2f} seconds")
-    if avg_inference_time is not None:
-        print(f"Average inference time: {avg_inference_time:.2f} seconds per call")
-    if input_chars is not None:
-        print(f"Total input characters: {input_chars}")
-    if output_chars is not None:
-        print(f"Total output characters: {output_chars}")
-
-    # Append all metrics to CSV with timing and character count data
-    append_metrics_to_csv(
-        args.output_csv, args.label, args.model_id, args.quantization_type, 
-        args.temperature, args.top_p, args.codebook_path, columns_to_compare, 
-        accuracy_scores, precision_scores, recall_scores, f1_scores, 
-        cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores, 
+    (
+        accuracy_scores, precision_scores, recall_scores, f1_scores,
+        cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
         spearman_corr_scores, quadratic_kappa_scores,
-        norm_levenshtein_scores, bleu_scores, 
+        norm_levenshtein_scores, bleu_scores,
         rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
-        cosine_scores, 
+        cosine_scores,
+        bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+        reports
+    ) = results
+
+    append_metrics_to_csv(
+        str(output_csv), label, model_id, quantization_type,
+        temperature, top_p, codebook_path, columns_to_compare,
+        accuracy_scores, precision_scores, recall_scores, f1_scores,
+        cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
+        spearman_corr_scores, quadratic_kappa_scores,
+        norm_levenshtein_scores, bleu_scores,
+        rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
+        cosine_scores,
         bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
         column_info,
-        prompt_type=args.prompt_type, use_examples=args.use_examples,
-        process_textbox=args.process_textbox,
-        emissions=emissions, energy_consumed=energy_consumed, 
+        prompt_type=prompt_type, use_examples=use_examples,
+        process_textbox=str(process_textbox).lower(),
+        emissions=emissions, energy_consumed=energy_consumed,
         cpu_model=cpu_model, gpu_model=gpu_model,
         total_inference_time=total_inference_time, avg_inference_time=avg_inference_time,
         input_chars=input_chars, output_chars=output_chars,
-        timestamp=args.timestamp, experiment_directory=args.experiment_directory
+        timestamp=timestamp, experiment_directory=experiment_directory
     )
 
-    write_classification_reports(args.report_file, columns_to_compare, reports)
-    
-    print(f"\nResults successfully written to {args.output_csv} and {args.report_file}")
+    write_classification_reports(str(report_file), columns_to_compare, reports)
+    metrics_by_column = _build_metrics_by_column(
+        columns_to_compare,
+        column_info,
+        accuracy_scores,
+        precision_scores,
+        recall_scores,
+        f1_scores,
+        cohen_kappa_scores,
+        krippendorff_alpha_scores,
+        percentage_agreement_scores,
+        spearman_corr_scores,
+        quadratic_kappa_scores,
+        norm_levenshtein_scores,
+        bleu_scores,
+        rouge1_f_scores,
+        rouge2_f_scores,
+        rougeL_f_scores,
+        cosine_scores,
+        bertscore_p_scores,
+        bertscore_r_scores,
+        bertscore_f1_scores,
+    )
 
-if __name__ == "__main__":
-    main()
+    logger.info("Results successfully written to %s and %s", output_csv, report_file)
+    return MetricsRunResult(
+        output_csv=output_csv,
+        report_file=report_file,
+        columns_to_compare=columns_to_compare,
+        metrics_by_column=metrics_by_column,
+        reports=reports,
+        total_inference_time=total_inference_time,
+        avg_inference_time=avg_inference_time,
+        input_chars=input_chars,
+        output_chars=output_chars,
+        energy_consumed=energy_consumed,
+        emissions=emissions,
+        cpu_model=cpu_model,
+        gpu_model=gpu_model,
+        summary_text=format_metrics_summary(
+            metrics_by_column,
+            total_inference_time=total_inference_time,
+            avg_inference_time=avg_inference_time,
+            input_chars=input_chars,
+            output_chars=output_chars,
+            energy_consumed=energy_consumed,
+            emissions=emissions,
+            cpu_model=cpu_model,
+            gpu_model=gpu_model,
+        ),
+    )
