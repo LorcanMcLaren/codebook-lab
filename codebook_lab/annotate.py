@@ -8,9 +8,24 @@ import pandas as pd
 import regex
 from codecarbon import OfflineEmissionsTracker
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama.llms import OllamaLLM
+from langchain_ollama.chat_models import ChatOllama
+from pydantic import BaseModel
 
+from .conditions import (
+    get_annotation_column_name,
+    get_annotation_entries,
+    is_annotation_applicable,
+    normalize_annotation_response_value,
+)
 from .ollama import ensure_ollama_available
+
+
+class AnnotationResponse(BaseModel):
+    """Schema used by ChatOllama structured output to guarantee valid JSON."""
+    response: str
+
+
+_PROMPT_TEMPLATE = ChatPromptTemplate.from_template("""{question}""")
 from .prompts import PromptContext, get_prompt_type_name, render_prompt
 from .types import AnnotationRunResult
 
@@ -55,17 +70,20 @@ class _AnnotationProgressBar:
             sys.stderr.write("\n")
             sys.stderr.flush()
 
+    def skip(self, count: int = 1) -> None:
+        """Reduce the remaining work estimate when prompts are skipped."""
+        if count <= 0:
+            return
+        self.total_steps = max(self.completed_steps, self.total_steps - count)
+
 
 def _count_annotations(codebook, process_textbox=False):
-    """Count how many annotation prompts will be issued for one row."""
+    """Count the maximum number of annotation prompts that could be issued for one row."""
     count = 0
-    for key, section in codebook.items():
-        if not key.startswith("section_"):
+    for _, _, _, annotation in get_annotation_entries(codebook):
+        if annotation.get("type") == "textbox" and not process_textbox:
             continue
-        for annotation in section.get("annotations", {}).values():
-            if annotation.get("type") == "textbox" and not process_textbox:
-                continue
-            count += 1
+        count += 1
     return count
 
 def load_codebook(codebook_path):
@@ -90,19 +108,10 @@ def get_annotation_column_names(codebook):
     Returns:
         List of column names in ``<section_name>_<annotation_name>`` format.
     """
-    annotation_columns = []
-
-    for key, section in codebook.items():
-        if not key.startswith("section_"):
-            continue
-
-        section_name = section["section_name"]
-        annotations = section.get("annotations", {})
-
-        for annotation in annotations.values():
-            annotation_columns.append(f"{section_name}_{annotation['name']}")
-
-    return annotation_columns
+    return [
+        get_annotation_column_name(section_content, annotation)
+        for _, section_content, _, annotation in get_annotation_entries(codebook)
+    ]
 
 def load_input_dataframe(csv_path, codebook):
     """Load the input CSV and remove any existing annotation label columns.
@@ -161,24 +170,23 @@ def setup_model(model_name, temperature=None, top_p=None):
         top_p: Optional nucleus-sampling value.
 
     Returns:
-        LangChain runnable that accepts ``{"question": prompt}``.
+        ``ChatOllama`` instance.  The caller builds structured-output chains
+        from this model as needed.
     """
     model_kwargs = {}
     if temperature is not None:
         model_kwargs['temperature'] = float(temperature)
     if top_p is not None:
         model_kwargs['top_p'] = float(top_p)
-    
-    llm = OllamaLLM(model=model_name, **model_kwargs)
-    prompt_template = ChatPromptTemplate.from_template("""{question}""")
-    chain = prompt_template | llm
-    return chain
+
+    llm = ChatOllama(model=model_name, **model_kwargs)
+    return llm
 
 def generate_response(chain, prompt, char_counts, timing_data, row_num=None, annotation_name=None):
     """Run one prompt through the model and update timing/count statistics.
 
     Args:
-        chain: Runnable returned by :func:`setup_model`.
+        chain: ``ChatOllama`` instance returned by :func:`setup_model`.
         prompt: Fully rendered prompt string.
         char_counts: Mutable dict with ``input_chars`` and ``output_chars`` integers.
         timing_data: Mutable dict with inference timing counters.
@@ -191,28 +199,40 @@ def generate_response(chain, prompt, char_counts, timing_data, row_num=None, ann
     try:
         # Track input characters
         char_counts['input_chars'] += len(prompt)
-        
+
         if row_num and annotation_name:
             logger.info("[Row %s] Sending request for: %s...", row_num, annotation_name)
 
+        structured_chain = (
+            _PROMPT_TEMPLATE
+            | chain.with_structured_output(AnnotationResponse, include_raw=True)
+        )
+
         start_time = time.time()
-        response = chain.invoke({"question": prompt})
+        result = structured_chain.invoke({"question": prompt})
         end_time = time.time()
         inference_time = end_time - start_time
         timing_data['total_inference_time'] += inference_time
         timing_data['inference_count'] += 1
 
+        if result.get("parsed") is not None:
+            response = result["parsed"].model_dump_json()
+        else:
+            raw = result.get("raw")
+            response = raw.content if raw else ""
+            logger.debug("Structured parsing failed, using raw response for %s", annotation_name)
+
         char_counts['output_chars'] += len(response)
 
         if row_num and annotation_name:
             logger.info("[Row %s] %s done (%.1fs)", row_num, annotation_name, inference_time)
-        
+
         return response
     except Exception as e:
         logger.warning("Error generating response: %s", e)
         return ""
 
-def extract_json_response(response, annotation_type, min_value=None, max_value=None):
+def extract_json_response(response, annotation_type, min_value=None, max_value=None, options=None):
     """
     Extract and validate JSON response based on annotation type
     
@@ -221,12 +241,22 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
         annotation_type: Annotation type string such as ``"dropdown"`` or ``"likert"``.
         min_value: Optional integer lower bound for Likert annotations.
         max_value: Optional integer upper bound for Likert annotations.
+        options: Optional dropdown option list used to normalize categorical labels.
 
     Returns:
         Parsed response value coerced into the expected annotation format.
     """
     pattern = regex.compile(r'\{(?:[^{}]|(?R))*\}')
     json_strings = pattern.findall(response)
+
+    def normalize_dropdown_value(value):
+        return normalize_annotation_response_value(
+            {
+                "type": "dropdown",
+                "options": options or [],
+            },
+            value,
+        )
     
     for json_string in json_strings:
         try:
@@ -235,7 +265,7 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
             
             # Validate and format based on annotation type
             if annotation_type == "dropdown":
-                return response_value
+                return normalize_dropdown_value(response_value)
             elif annotation_type == "checkbox":
                 # Convert to 1 or 0
                 if isinstance(response_value, bool):
@@ -251,7 +281,7 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
                 return 0
             elif annotation_type == "textbox":
                 # Return as string
-                return str(response_value)
+                return str(response_value).strip()
             elif annotation_type == "likert":
                 # Validate is within range and convert to int
                 try:
@@ -266,12 +296,16 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
                     return response_value
             
             # Fallback
-            return response_value
+            return str(response_value).strip() if isinstance(response_value, str) else response_value
         except json.JSONDecodeError as e:
             logger.debug("Error parsing JSON: %s", e)
     
     # If no valid JSON, try to extract direct response
-    if annotation_type == "checkbox":
+    stripped_response = response.strip()
+
+    if annotation_type == "dropdown":
+        return normalize_dropdown_value(stripped_response)
+    elif annotation_type == "checkbox":
         if "yes" in response.lower() or "true" in response.lower():
             return 1
         elif "no" in response.lower() or "false" in response.lower():
@@ -288,8 +322,10 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
             except ValueError:
                 continue
         return (min_value + max_value) // 2  # Default to middle value
+    elif annotation_type == "textbox":
+        return stripped_response
     
-    return response  # Return raw response as fallback
+    return None
 
 def format_prompt(section_name, section_instruction, name, tooltip, annotation_type, 
                options=None, min_value=None, max_value=None, example=None, 
@@ -466,73 +502,73 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
     if timing_data is None:
         timing_data = {'total_inference_time': 0, 'inference_count': 0}
     
-    for key, section in codebook.items():
-        if key.startswith('section_'):
-            section_name = section['section_name']
-            section_instruction = section.get('section_instruction', '')
-            annotations = section['annotations']
-            
-            for annotation_key, annotation in annotations.items():
-                name = annotation['name']
-                annotation_type = annotation['type']
-                
-                # Skip textbox type annotations if process_textbox is False
-                if annotation_type == "textbox" and not process_textbox:
-                    continue
-                
-                tooltip = annotation.get('tooltip', '')
-                example = annotation.get('example', '')
-                
-                # Get type-specific parameters
-                options = None
-                min_value = None
-                max_value = None
-                
-                if annotation_type == "dropdown":
-                    options = annotation.get('options', [])
-                elif annotation_type == "likert":
-                    min_value = annotation.get('min_value')
-                    max_value = annotation.get('max_value')
+    for section_key, section, annotation_key, annotation in get_annotation_entries(codebook):
+        section_name = section['section_name']
+        section_instruction = section.get('section_instruction', '')
+        name = annotation['name']
+        annotation_type = annotation['type']
+        annotation_full_name = f"{section_name}_{name}"
+        column_name = get_annotation_column_name(section, annotation)
 
-                # Format prompt based on specified type and annotation type
-                prompt = format_prompt(
-                    section_name,
-                    section_instruction,
-                    name, 
-                    tooltip,
-                    annotation_type,
-                    options,
-                    min_value,
-                    max_value,
-                    example, 
-                    text, 
-                    prompt_type=prompt_type,
-                    use_examples=use_examples
-                )
-                
-                annotation_full_name = f"{section_name}_{name}"
-                response_text = generate_response(
-                    chain, 
-                    prompt, 
-                    char_counts, 
-                    timing_data,
-                    row_num=row_num,
-                    annotation_name=annotation_full_name
-                )
-                response_value = extract_json_response(
-                    response_text, 
-                    annotation_type,
-                    min_value,
-                    max_value
-                )
-                
-                if response_value is not None:
-                    # Store the response with a meaningful column name
-                    column_name = f"{section_name}_{name}"
-                    responses[column_name] = response_value
+        if annotation_type == "textbox" and not process_textbox:
+            if progress_bar is not None:
+                progress_bar.skip()
+            continue
 
-                if progress_bar is not None and row_num is not None and total_rows is not None:
-                    progress_bar.update(row_num, total_rows, annotation_full_name)
+        if not is_annotation_applicable(codebook, section_key, annotation_key, responses):
+            responses[column_name] = None
+            if progress_bar is not None:
+                progress_bar.skip()
+            continue
+
+        tooltip = annotation.get('tooltip', '')
+        example = annotation.get('example', '')
+
+        options = None
+        min_value = None
+        max_value = None
+
+        if annotation_type == "dropdown":
+            options = annotation.get('options', [])
+        elif annotation_type == "likert":
+            min_value = annotation.get('min_value')
+            max_value = annotation.get('max_value')
+
+        prompt = format_prompt(
+            section_name,
+            section_instruction,
+            name,
+            tooltip,
+            annotation_type,
+            options,
+            min_value,
+            max_value,
+            example,
+            text,
+            prompt_type=prompt_type,
+            use_examples=use_examples
+        )
+
+        response_text = generate_response(
+            chain,
+            prompt,
+            char_counts,
+            timing_data,
+            row_num=row_num,
+            annotation_name=annotation_full_name
+        )
+        response_value = extract_json_response(
+            response_text,
+            annotation_type,
+            min_value,
+            max_value,
+            options=options,
+        )
+
+        responses[column_name] = response_value if response_value is not None else None
+
+        if progress_bar is not None and row_num is not None and total_rows is not None:
+            progress_bar.update(row_num, total_rows, annotation_full_name)
 
     return responses, char_counts, timing_data
 

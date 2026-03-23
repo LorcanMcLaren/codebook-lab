@@ -16,6 +16,13 @@ import krippendorff
 from scipy.stats import spearmanr
 from sklearn.metrics import confusion_matrix
 
+from .conditions import (
+    get_annotation_column_name,
+    get_annotation_condition,
+    get_annotation_entries,
+    get_annotation_lookup,
+    normalize_annotation_response_value,
+)
 from .types import MetricsRunResult
 
 logger = logging.getLogger(__name__)
@@ -82,37 +89,89 @@ def extract_column_info_from_codebook(codebook_path):
     """
     with open(codebook_path, 'r') as file:
         codebook = json.load(file)
-    
+
+    lookup = get_annotation_lookup(codebook)
     column_info = {}
-    
-    for key, section in codebook.items():
-        if key.startswith('section_'):
-            section_name = section['section_name']
-            annotations = section['annotations']
-            
-            for annotation_key, annotation in annotations.items():
-                name = annotation['name']
-                
-                column_name = f"{section_name}_{name}"
-                
-                # Extract annotation type and relevant properties
-                annotation_type = annotation.get('type', 'dropdown')  # Default to dropdown for backward compatibility
-                
-                properties = {
-                    'type': annotation_type
+
+    for section_key, section, annotation_key, annotation in get_annotation_entries(codebook):
+        column_name = get_annotation_column_name(section, annotation)
+        annotation_type = annotation.get('type', 'dropdown')
+
+        properties = {
+            'type': annotation_type,
+            'section_key': section_key,
+            'annotation_key': annotation_key,
+        }
+
+        if annotation_type == 'dropdown':
+            properties['options'] = annotation.get('options', [])
+        elif annotation_type == 'likert':
+            properties['min_value'] = annotation.get('min_value', 0)
+            properties['max_value'] = annotation.get('max_value', 5)
+
+        condition = get_annotation_condition(annotation)
+        if condition:
+            source_entry = lookup.get((condition['section_key'], condition['annotation_key']))
+            if source_entry:
+                source_section, source_annotation = source_entry
+                properties['condition'] = {
+                    'source_column': get_annotation_column_name(source_section, source_annotation),
+                    'source_type': source_annotation.get('type', 'dropdown'),
+                    'value': normalize_annotation_response_value(source_annotation, condition.get('value')),
                 }
-                
-                # Add type-specific properties
-                if annotation_type == 'dropdown':
-                    properties['options'] = annotation.get('options', [])
-                elif annotation_type == 'likert':
-                    properties['min_value'] = annotation.get('min_value', 0)
-                    properties['max_value'] = annotation.get('max_value', 5)
-                
-                column_info[column_name] = properties
+
+        column_info[column_name] = properties
     
     logger.debug("Extracted column info from codebook: %s", column_info)
     return column_info
+
+
+def _is_row_applicable_for_column(merged_row, column, column_info, side="gt", visited=None):
+    """Return whether a conditional annotation is applicable for one merged row."""
+    info = column_info.get(column, {})
+    condition = info.get("condition")
+    if not condition:
+        return True
+
+    source_column = condition.get("source_column")
+    if not source_column:
+        return True
+
+    visited = visited or set()
+    if column in visited:
+        return True
+
+    if source_column in column_info and not _is_row_applicable_for_column(
+        merged_row,
+        source_column,
+        column_info,
+        side=side,
+        visited=visited | {column},
+    ):
+        return False
+
+    source_value = merged_row.get(f"{source_column}_{side}")
+    source_annotation = {"type": condition.get("source_type", "dropdown")}
+    actual_value = normalize_annotation_response_value(source_annotation, source_value)
+    expected_value = normalize_annotation_response_value(source_annotation, condition.get("value"))
+
+    if actual_value is None:
+        return False
+    if condition.get("source_type") == "textbox" and actual_value == "":
+        return False
+
+    return actual_value == expected_value
+
+
+def _get_applicable_row_mask(merged_df, column, column_info, side="gt"):
+    """Return a boolean mask for rows where an annotation is applicable."""
+    if "condition" not in column_info.get(column, {}):
+        return pd.Series(True, index=merged_df.index)
+
+    return merged_df.apply(
+        lambda row: _is_row_applicable_for_column(row, column, column_info, side=side),
+        axis=1,
+    )
 
 def load_data(ground_truth_path, llm_output_path, columns_to_compare):
     """Load and align ground-truth and model-output CSV files for evaluation.
@@ -413,8 +472,9 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
             reports[column] = "Textbox processing skipped."
             continue
             
-        y_true = merged_df[column_gt]
-        y_pred = merged_df[column_llm]
+        applicable_mask = _get_applicable_row_mask(merged_df, column, column_info, side="gt")
+        y_true = merged_df.loc[applicable_mask, column_gt]
+        y_pred = merged_df.loc[applicable_mask, column_llm]
 
         # Handle values based on annotation type
         if annotation_type == 'checkbox':
@@ -548,8 +608,8 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
 
             # For Krippendorff's alpha
             label_to_int = {label: i for i, label in enumerate(['missing'] + all_labels)}
-            y_true_encoded = np.array([label_to_int[y_true_clean[i]] for i in range(len(y_true_clean))])
-            y_pred_encoded = np.array([label_to_int[y_pred_clean[i]] for i in range(len(y_pred_clean))])
+            y_true_encoded = np.array([label_to_int[value] for value in y_true_clean.tolist()])
+            y_pred_encoded = np.array([label_to_int[value] for value in y_pred_clean.tolist()])
             data = np.array([y_true_encoded, y_pred_encoded])
             krippendorff_alpha_scores[column] = krippendorff.alpha(reliability_data=data)
 
