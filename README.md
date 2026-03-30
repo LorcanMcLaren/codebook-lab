@@ -1,6 +1,6 @@
 # CodeBook Lab
 
-[![DOI](https://zenodo.org/badge/1186234207.svg)](https://doi.org/10.5281/zenodo.19185921) [![PyPI](https://img.shields.io/pypi/v/codebook-lab)](https://pypi.org/project/codebook-lab/)
+[![DOI](https://zenodo.org/badge/1186234207.svg)](https://doi.org/10.5281/zenodo.19185921) [![PyPI](https://img.shields.io/pypi/v/codebook-lab)](https://pypi.org/project/codebook-lab/) [![Python](https://img.shields.io/pypi/pyversions/codebook-lab)](https://pypi.org/project/codebook-lab/) [![License](https://img.shields.io/pypi/l/codebook-lab)](https://pypi.org/project/codebook-lab/)
 
 CodeBook Lab is an LLM annotation experiment pipeline for computational social science. It takes a codebook and labelled dataset from [CodeBook Studio](https://codebook.streamlit.app/) ([source](https://github.com/LorcanMcLaren/codebook-studio)) and runs structured experiments across the dimensions that matter for text-as-data research: model choice, model size, prompt style, zero-shot versus few-shot learning, and sampling hyperparameters — all benchmarked against human labels.
 
