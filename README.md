@@ -252,7 +252,7 @@ This project is licensed under the [GNU Affero General Public License v3.0](http
 If you use CodeBook Lab in research, please cite both:
 
 - this software package
-- the associated preprint
+- the associated arXiv preprint
 
 Citation metadata is also available in the project's [`CITATION.cff`](https://github.com/LorcanMcLaren/codebook-lab/blob/main/CITATION.cff).
 
@@ -279,7 +279,7 @@ BibTeX:
 
 APSR style:
 
-McLaren, Lorcan, James P. Cross, Zuzanna Krakowska, Robin Rauner, and Martijn Schoonvelde. 2026. *Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation*. Preprint.
+McLaren, Lorcan, James P. Cross, Zuzanna Krakowska, Robin Rauner, and Martijn Schoonvelde. 2026. *Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation*. arXiv preprint arXiv:2603.26898. [https://arxiv.org/abs/2603.26898](https://arxiv.org/abs/2603.26898).
 
 BibTeX:
 
@@ -288,6 +288,10 @@ BibTeX:
   author = {McLaren, Lorcan and Cross, James P. and Krakowska, Zuzanna and Rauner, Robin and Schoonvelde, Martijn},
   title = {Magic Words or Methodical Work? Challenging Conventional Wisdom in LLM-Based Political Text Annotation},
   year = {2026},
-  note = {Preprint}
+  eprint = {2603.26898},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.CL},
+  doi = {10.48550/arXiv.2603.26898},
+  url = {https://arxiv.org/abs/2603.26898}
 }
 ```
