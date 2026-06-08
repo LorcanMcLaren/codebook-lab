@@ -205,7 +205,9 @@ def generate_response(chain, prompt, char_counts, timing_data, row_num=None, ann
 
         structured_chain = (
             _PROMPT_TEMPLATE
-            | chain.with_structured_output(AnnotationResponse, include_raw=True)
+            | chain.with_structured_output(
+                AnnotationResponse, method="json_schema", include_raw=True
+            )
         )
 
         start_time = time.time()
