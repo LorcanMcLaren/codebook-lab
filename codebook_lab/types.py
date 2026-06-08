@@ -82,6 +82,7 @@ class ExperimentSpec:
         temperature: Optional sampling temperature as ``None``, string, or float.
         top_p: Optional nucleus-sampling value as ``None``, string, or float.
         process_textbox: Whether textbox annotations should be generated and scored.
+        process_span: Whether span annotations should be generated and scored.
         country_iso_code: Three-letter ISO 3166-1 alpha-3 code for CodeCarbon.
     """
 
@@ -92,6 +93,7 @@ class ExperimentSpec:
     temperature: float | None = None
     top_p: float | None = None
     process_textbox: bool = False
+    process_span: bool = False
     country_iso_code: str = "USA"
 
 

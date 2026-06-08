@@ -23,6 +23,7 @@ from .conditions import (
     get_annotation_lookup,
     normalize_annotation_response_value,
 )
+from .span_metrics import compute_span_metrics
 from .types import MetricsRunResult
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,9 @@ def extract_column_info_from_codebook(codebook_path):
         elif annotation_type == 'likert':
             properties['min_value'] = annotation.get('min_value', 0)
             properties['max_value'] = annotation.get('max_value', 5)
+        elif annotation_type == 'span':
+            label_options = annotation.get('label_options') or []
+            properties['label_options'] = list(label_options)
 
         condition = get_annotation_condition(annotation)
         if condition:
@@ -415,7 +419,14 @@ def quadratic_weighted_kappa(y_true, y_pred):
     
     return k
 
-def evaluate_performance(merged_df, columns_to_compare, column_info, process_textbox=False):
+def evaluate_performance(
+    merged_df,
+    columns_to_compare,
+    column_info,
+    process_textbox=False,
+    process_span=False,
+    texts=None,
+):
     """Compute evaluation metrics for each requested annotation column.
 
     Args:
@@ -423,6 +434,10 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
         columns_to_compare: List of annotation columns to evaluate.
         column_info: Metadata mapping produced by :func:`extract_column_info_from_codebook`.
         process_textbox: Whether textbox similarity metrics should be calculated.
+        process_span: Whether span metrics should be calculated.
+        texts: Optional iterable of source texts (one per row in ``merged_df``)
+            used to evaluate span annotations. Required when ``process_span``
+            is True and any span columns are present.
 
     Returns:
         Tuple of metric dictionaries and report text keyed by annotation column name.
@@ -452,6 +467,11 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
     bertscore_r_scores = {col: float('nan') for col in columns_to_compare}
     bertscore_f1_scores = {col: float('nan') for col in columns_to_compare}
 
+    # Span metrics
+    token_f1_scores = {col: float('nan') for col in columns_to_compare}
+    exact_match_f1_scores = {col: float('nan') for col in columns_to_compare}
+    char_iou_scores = {col: float('nan') for col in columns_to_compare}
+
     for column in columns_to_compare:
         column_gt = f'{column}_gt'
         column_llm = f'{column}_llm'
@@ -471,7 +491,50 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
             logger.info("Skipping textbox column '%s' as process_textbox is False", column)
             reports[column] = "Textbox processing skipped."
             continue
-            
+
+        # Skip span annotations if process_span is False
+        if annotation_type == 'span' and not process_span:
+            logger.info("Skipping span column '%s' as process_span is False", column)
+            reports[column] = "Span processing skipped."
+            continue
+
+        # Span annotations get a dedicated metric pipeline and don't use the
+        # downstream classification-style code path.
+        if annotation_type == 'span':
+            applicable_mask = _get_applicable_row_mask(merged_df, column, column_info, side="gt")
+            gt_values = merged_df.loc[applicable_mask, column_gt]
+            pred_values = merged_df.loc[applicable_mask, column_llm]
+            if texts is None:
+                logger.warning(
+                    "Cannot compute span metrics for column '%s' without source texts.",
+                    column,
+                )
+                reports[column] = "Span metrics skipped: source texts unavailable."
+                continue
+            texts_series = pd.Series(list(texts), index=merged_df.index)
+            row_texts = texts_series.loc[applicable_mask]
+            label_options = column_info.get(column, {}).get('label_options') or None
+            try:
+                span_metrics = compute_span_metrics(
+                    row_texts.fillna('').astype(str).tolist(),
+                    gt_values.tolist(),
+                    pred_values.tolist(),
+                    label_options=label_options,
+                )
+                token_f1_scores[column] = span_metrics['token_f1']
+                exact_match_f1_scores[column] = span_metrics['exact_match_f1']
+                char_iou_scores[column] = span_metrics['char_iou']
+                reports[column] = (
+                    "Span field, specialized metrics calculated "
+                    f"(token_f1={span_metrics['token_f1']:.3f}, "
+                    f"exact_match_f1={span_metrics['exact_match_f1']:.3f}, "
+                    f"char_iou={span_metrics['char_iou']:.3f})."
+                )
+            except Exception as exc:
+                logger.warning("Error calculating span metrics for column '%s': %s", column, exc)
+                reports[column] = f"Error in span metrics: {exc}"
+            continue
+
         applicable_mask = _get_applicable_row_mask(merged_df, column, column_info, side="gt")
         y_true = merged_df.loc[applicable_mask, column_gt]
         y_pred = merged_df.loc[applicable_mask, column_llm]
@@ -623,13 +686,14 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
             logger.debug("Current state - y_pred sample:\n%s", y_pred.head().to_string())
             reports[column] = f"Error: {str(e)}"
 
-    return (accuracy_scores, precision_scores, recall_scores, f1_scores, 
-            cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores, 
-            spearman_corr_scores, quadratic_kappa_scores, 
-            norm_levenshtein_scores, bleu_scores, 
+    return (accuracy_scores, precision_scores, recall_scores, f1_scores,
+            cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
+            spearman_corr_scores, quadratic_kappa_scores,
+            norm_levenshtein_scores, bleu_scores,
             rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
-            cosine_scores, 
+            cosine_scores,
             bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+            token_f1_scores, exact_match_f1_scores, char_iou_scores,
             reports)
 
 def evaluate_textbox_performance(y_true, y_pred):
@@ -861,13 +925,15 @@ def evaluate_textbox_performance(y_true, y_pred):
 def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temperature, top_p, codebook_path,
                          columns_to_compare, accuracy_scores, precision_scores, recall_scores,
                          f1_scores, cohen_kappa_scores, krippendorff_alpha_scores,
-                         percentage_agreement_scores, spearman_corr_scores, quadratic_kappa_scores, 
-                         norm_levenshtein_scores, bleu_scores, 
+                         percentage_agreement_scores, spearman_corr_scores, quadratic_kappa_scores,
+                         norm_levenshtein_scores, bleu_scores,
                          rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
-                         cosine_scores, 
+                         cosine_scores,
                          bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+                         token_f1_scores, exact_match_f1_scores, char_iou_scores,
                          column_info,
                          prompt_type=None, use_examples=None, process_textbox=None,
+                         process_span=None,
                          emissions=None, energy_consumed=None, cpu_model=None, gpu_model=None,
                          total_inference_time=None, avg_inference_time=None,
                          input_chars=None, output_chars=None,
@@ -923,18 +989,20 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
 
     # Create base header with metadata columns - ADD TIMING AND CHARACTER COUNT COLUMNS
     base_header = ['Timestamp', 'Label', 'Model ID', 'Quantization Type', 'Temperature', 'Top_P',
-                 'Prompt Type', 'Use Examples', 'Process Textbox', 'Codebook Path', 'Experiment Directory',
+                 'Prompt Type', 'Use Examples', 'Process Textbox', 'Process Span',
+                 'Codebook Path', 'Experiment Directory',
                  'CPU Model', 'GPU Model', 'Emissions (kg CO₂eq)', 'Energy Consumed (kWh)',
-                 'Total Inference Time (s)', 'Avg Inference Time (s)', 
+                 'Total Inference Time (s)', 'Avg Inference Time (s)',
                  'Total Input Chars', 'Total Output Chars']
     
     # Dynamically create header with only relevant metrics for each column
     metric_header = []
     for col in columns_to_compare:
         annotation_type = column_info.get(col, {}).get('type', 'dropdown')
-        
-        # Common metric for all types
-        metric_header.append(f'{col}_percentage_agreement')
+
+        # Common metric for all non-span types (spans use their own metrics)
+        if annotation_type != 'span':
+            metric_header.append(f'{col}_percentage_agreement')
         
         # Metrics for categorical fields (dropdown, checkbox)
         if annotation_type in ['dropdown', 'checkbox'] or annotation_type == 'likert':
@@ -957,17 +1025,25 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
         # Metrics for textbox fields
         if annotation_type == 'textbox':
             metric_header.extend([
-                f'{col}_norm_levenshtein', 
-                f'{col}_bleu', 
-                f'{col}_rouge1_f', 
-                f'{col}_rouge2_f', 
-                f'{col}_rougeL_f', 
-                f'{col}_cosine_similarity', 
-                f'{col}_bertscore_precision', 
-                f'{col}_bertscore_recall', 
+                f'{col}_norm_levenshtein',
+                f'{col}_bleu',
+                f'{col}_rouge1_f',
+                f'{col}_rouge2_f',
+                f'{col}_rougeL_f',
+                f'{col}_cosine_similarity',
+                f'{col}_bertscore_precision',
+                f'{col}_bertscore_recall',
                 f'{col}_bertscore_f1'
             ])
-    
+
+        # Metrics for span fields
+        if annotation_type == 'span':
+            metric_header.extend([
+                f'{col}_token_f1',
+                f'{col}_exact_match_f1',
+                f'{col}_char_iou',
+            ])
+
     # Combine base and metric headers
     new_header = base_header + metric_header
 
@@ -1006,6 +1082,7 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
             'Prompt Type': prompt_type,
             'Use Examples': use_examples,
             'Process Textbox': process_textbox,
+            'Process Span': process_span,
             'Codebook Path': codebook_path,
             'Experiment Directory': experiment_directory,
             'CPU Model': cpu_model,
@@ -1021,10 +1098,11 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
         # Add metrics based on column type
         for col in columns_to_compare:
             annotation_type = column_info.get(col, {}).get('type', 'dropdown')
-            
-            # Common metric for all types
-            new_row[f'{col}_percentage_agreement'] = percentage_agreement_scores[col]
-            
+
+            # Common metric for all non-span types
+            if annotation_type != 'span':
+                new_row[f'{col}_percentage_agreement'] = percentage_agreement_scores[col]
+
             # Metrics for categorical fields (dropdown, checkbox)
             if annotation_type in ['dropdown', 'checkbox'] or annotation_type == 'likert':
                 new_row[f'{col}_accuracy'] = accuracy_scores[col]
@@ -1033,12 +1111,12 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
                 new_row[f'{col}_f1'] = f1_scores[col]
                 new_row[f'{col}_cohen_kappa'] = cohen_kappa_scores[col]
                 new_row[f'{col}_krippendorff_alpha'] = krippendorff_alpha_scores[col]
-            
+
             # Metrics for likert fields
             if annotation_type == 'likert':
                 new_row[f'{col}_spearman_corr'] = spearman_corr_scores[col]
                 new_row[f'{col}_quadratic_kappa'] = quadratic_kappa_scores[col]
-            
+
             # Metrics for textbox fields
             if annotation_type == 'textbox':
                 new_row[f'{col}_norm_levenshtein'] = norm_levenshtein_scores[col]
@@ -1050,6 +1128,12 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
                 new_row[f'{col}_bertscore_precision'] = bertscore_p_scores[col]
                 new_row[f'{col}_bertscore_recall'] = bertscore_r_scores[col]
                 new_row[f'{col}_bertscore_f1'] = bertscore_f1_scores[col]
+
+            # Metrics for span fields
+            if annotation_type == 'span':
+                new_row[f'{col}_token_f1'] = token_f1_scores[col]
+                new_row[f'{col}_exact_match_f1'] = exact_match_f1_scores[col]
+                new_row[f'{col}_char_iou'] = char_iou_scores[col]
 
         # Add any missing columns with NaN values
         for col in df.columns:
@@ -1070,6 +1154,7 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
             'Prompt Type': prompt_type,
             'Use Examples': use_examples,
             'Process Textbox': process_textbox,
+            'Process Span': process_span,
             'Codebook Path': codebook_path,
             'Experiment Directory': experiment_directory,
             'CPU Model': cpu_model,
@@ -1085,10 +1170,11 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
         # Add metrics based on column type
         for col in columns_to_compare:
             annotation_type = column_info.get(col, {}).get('type', 'dropdown')
-            
-            # Common metric for all types
-            new_row[f'{col}_percentage_agreement'] = percentage_agreement_scores[col]
-            
+
+            # Common metric for all non-span types
+            if annotation_type != 'span':
+                new_row[f'{col}_percentage_agreement'] = percentage_agreement_scores[col]
+
             # Metrics for categorical fields (dropdown, checkbox)
             if annotation_type in ['dropdown', 'checkbox'] or annotation_type == 'likert':
                 new_row[f'{col}_accuracy'] = accuracy_scores[col]
@@ -1097,12 +1183,12 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
                 new_row[f'{col}_f1'] = f1_scores[col]
                 new_row[f'{col}_cohen_kappa'] = cohen_kappa_scores[col]
                 new_row[f'{col}_krippendorff_alpha'] = krippendorff_alpha_scores[col]
-            
+
             # Metrics for likert fields
             if annotation_type == 'likert':
                 new_row[f'{col}_spearman_corr'] = spearman_corr_scores[col]
                 new_row[f'{col}_quadratic_kappa'] = quadratic_kappa_scores[col]
-            
+
             # Metrics for textbox fields
             if annotation_type == 'textbox':
                 new_row[f'{col}_norm_levenshtein'] = norm_levenshtein_scores[col]
@@ -1114,6 +1200,12 @@ def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temper
                 new_row[f'{col}_bertscore_precision'] = bertscore_p_scores[col]
                 new_row[f'{col}_bertscore_recall'] = bertscore_r_scores[col]
                 new_row[f'{col}_bertscore_f1'] = bertscore_f1_scores[col]
+
+            # Metrics for span fields
+            if annotation_type == 'span':
+                new_row[f'{col}_token_f1'] = token_f1_scores[col]
+                new_row[f'{col}_exact_match_f1'] = exact_match_f1_scores[col]
+                new_row[f'{col}_char_iou'] = char_iou_scores[col]
 
         df = pd.DataFrame([new_row], columns=new_header)
         df.to_csv(output_csv, index=False)
@@ -1154,6 +1246,9 @@ def _build_metrics_by_column(
     bertscore_p_scores,
     bertscore_r_scores,
     bertscore_f1_scores,
+    token_f1_scores,
+    exact_match_f1_scores,
+    char_iou_scores,
 ):
     """Assemble a compact nested metrics dictionary keyed by column name.
 
@@ -1187,8 +1282,9 @@ def _build_metrics_by_column(
         annotation_type = column_info.get(column, {}).get('type', 'dropdown')
         column_metrics = {
             "annotation_type": annotation_type,
-            "percentage_agreement": percentage_agreement_scores[column],
         }
+        if annotation_type != 'span':
+            column_metrics["percentage_agreement"] = percentage_agreement_scores[column]
 
         if annotation_type in ['dropdown', 'checkbox', 'likert']:
             column_metrics.update({
@@ -1217,6 +1313,13 @@ def _build_metrics_by_column(
                 "bertscore_precision": bertscore_p_scores[column],
                 "bertscore_recall": bertscore_r_scores[column],
                 "bertscore_f1": bertscore_f1_scores[column],
+            })
+
+        if annotation_type == 'span':
+            column_metrics.update({
+                "token_f1": token_f1_scores[column],
+                "exact_match_f1": exact_match_f1_scores[column],
+                "char_iou": char_iou_scores[column],
             })
 
         metrics_by_column[column] = column_metrics
@@ -1287,6 +1390,12 @@ def format_metrics_summary(
                 ("spearman", "spearman_corr"),
                 ("quadratic_kappa", "quadratic_kappa"),
             ]
+        elif annotation_type == "span":
+            metric_order = [
+                ("token_f1", "token_f1"),
+                ("exact_match_f1", "exact_match_f1"),
+                ("char_iou", "char_iou"),
+            ]
         else:
             metric_order = [
                 ("agreement", "percentage_agreement"),
@@ -1337,6 +1446,7 @@ def run_metrics(
     prompt_type=None,
     use_examples=None,
     process_textbox=False,
+    process_span=False,
     emissions_file=None,
     experiment_directory=None,
     timestamp=None,
@@ -1370,6 +1480,7 @@ def run_metrics(
         :class:`codebook_lab.types.MetricsRunResult` for the completed evaluation.
     """
     process_textbox = str(process_textbox).lower() in ('true', 'yes', '1', 't', 'y')
+    process_span = str(process_span).lower() in ('true', 'yes', '1', 't', 'y')
 
     output_csv = Path(output_csv)
     report_file = Path(report_file)
@@ -1397,7 +1508,44 @@ def run_metrics(
     all_columns = [f'{col}_gt' for col in columns_to_compare] + [f'{col}_llm' for col in columns_to_compare]
     fill_missing_values(merged_df, all_columns, fill_value='')
 
-    results = evaluate_performance(merged_df, columns_to_compare, column_info, process_textbox)
+    # When span metrics are enabled, source texts are required so we can align
+    # per-row offsets against the original document.
+    texts = None
+    has_span_columns = any(
+        column_info.get(col, {}).get('type') == 'span' for col in columns_to_compare
+    )
+    if process_span and has_span_columns:
+        try:
+            with open(codebook_path, 'r') as fh:
+                codebook = json.load(fh)
+            text_column = codebook.get('text_column')
+            if text_column:
+                gt_df = pd.read_csv(ground_truth_csv)
+                if text_column in gt_df.columns:
+                    texts = gt_df[text_column].fillna('').astype(str).tolist()
+                else:
+                    logger.warning(
+                        "text_column '%s' from codebook is not present in %s; "
+                        "span metrics will be skipped.",
+                        text_column,
+                        ground_truth_csv,
+                    )
+            else:
+                logger.warning(
+                    "Codebook %s does not declare a text_column; span metrics will be skipped.",
+                    codebook_path,
+                )
+        except Exception as exc:
+            logger.warning("Could not load source texts for span metrics: %s", exc)
+
+    results = evaluate_performance(
+        merged_df,
+        columns_to_compare,
+        column_info,
+        process_textbox=process_textbox,
+        process_span=process_span,
+        texts=texts,
+    )
     (
         accuracy_scores, precision_scores, recall_scores, f1_scores,
         cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
@@ -1406,6 +1554,7 @@ def run_metrics(
         rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
         cosine_scores,
         bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+        token_f1_scores, exact_match_f1_scores, char_iou_scores,
         reports
     ) = results
 
@@ -1419,9 +1568,11 @@ def run_metrics(
         rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
         cosine_scores,
         bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+        token_f1_scores, exact_match_f1_scores, char_iou_scores,
         column_info,
         prompt_type=prompt_type, use_examples=use_examples,
         process_textbox=str(process_textbox).lower(),
+        process_span=str(process_span).lower(),
         emissions=emissions, energy_consumed=energy_consumed,
         cpu_model=cpu_model, gpu_model=gpu_model,
         total_inference_time=total_inference_time, avg_inference_time=avg_inference_time,
@@ -1451,6 +1602,9 @@ def run_metrics(
         bertscore_p_scores,
         bertscore_r_scores,
         bertscore_f1_scores,
+        token_f1_scores,
+        exact_match_f1_scores,
+        char_iou_scores,
     )
 
     logger.info("Results successfully written to %s and %s", output_csv, report_file)

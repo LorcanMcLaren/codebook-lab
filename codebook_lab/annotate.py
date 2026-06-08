@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import sys
 import time
+from typing import Any, Optional
 
 import pandas as pd
 import regex
@@ -18,11 +19,37 @@ from .conditions import (
     normalize_annotation_response_value,
 )
 from .ollama import ensure_ollama_available
+from .span_value import parse_span_value, serialize_span_value
 
 
 class AnnotationResponse(BaseModel):
-    """Schema used by ChatOllama structured output to guarantee valid JSON."""
+    """Default schema for categorical/numeric/textbox annotation types.
+
+    Used by ChatOllama structured output to guarantee valid JSON for
+    annotation types whose payload is a single string-coercible value
+    (checkbox 0/1, likert integers, dropdown choices, textbox free text).
+    """
     response: str
+
+
+class SpanItem(BaseModel):
+    """One highlighted text span returned by the model."""
+    start: int
+    end: int
+    text: Optional[str] = None
+    label: Optional[str] = None
+
+
+class SpanAnnotationResponse(BaseModel):
+    """Schema used by ChatOllama structured output for span annotations."""
+    response: list[SpanItem]
+
+
+def _response_schema_for_type(annotation_type: str) -> type[BaseModel]:
+    """Return the Pydantic schema matching an annotation type."""
+    if annotation_type == "span":
+        return SpanAnnotationResponse
+    return AnnotationResponse
 
 
 _PROMPT_TEMPLATE = ChatPromptTemplate.from_template("""{question}""")
@@ -77,11 +104,14 @@ class _AnnotationProgressBar:
         self.total_steps = max(self.completed_steps, self.total_steps - count)
 
 
-def _count_annotations(codebook, process_textbox=False):
+def _count_annotations(codebook, process_textbox=False, process_span=False):
     """Count the maximum number of annotation prompts that could be issued for one row."""
     count = 0
     for _, _, _, annotation in get_annotation_entries(codebook):
-        if annotation.get("type") == "textbox" and not process_textbox:
+        ann_type = annotation.get("type")
+        if ann_type == "textbox" and not process_textbox:
+            continue
+        if ann_type == "span" and not process_span:
             continue
         count += 1
     return count
@@ -182,7 +212,15 @@ def setup_model(model_name, temperature=None, top_p=None):
     llm = ChatOllama(model=model_name, **model_kwargs)
     return llm
 
-def generate_response(chain, prompt, char_counts, timing_data, row_num=None, annotation_name=None):
+def generate_response(
+    chain,
+    prompt,
+    char_counts,
+    timing_data,
+    row_num=None,
+    annotation_name=None,
+    annotation_type=None,
+):
     """Run one prompt through the model and update timing/count statistics.
 
     Args:
@@ -192,10 +230,14 @@ def generate_response(chain, prompt, char_counts, timing_data, row_num=None, ann
         timing_data: Mutable dict with inference timing counters.
         row_num: Optional 1-based row number for progress logging.
         annotation_name: Optional annotation label for progress logging.
+        annotation_type: Annotation type string used to pick the structured
+            output schema (``"span"`` uses ``SpanAnnotationResponse``; everything
+            else uses ``AnnotationResponse``).
 
     Returns:
         Raw model response string, or ``""`` if inference failed.
     """
+    response_schema = _response_schema_for_type(annotation_type or "")
     try:
         # Track input characters
         char_counts['input_chars'] += len(prompt)
@@ -205,7 +247,9 @@ def generate_response(chain, prompt, char_counts, timing_data, row_num=None, ann
 
         structured_chain = (
             _PROMPT_TEMPLATE
-            | chain.with_structured_output(AnnotationResponse, include_raw=True)
+            | chain.with_structured_output(
+                response_schema, method="json_schema", include_raw=True
+            )
         )
 
         start_time = time.time()
@@ -232,20 +276,90 @@ def generate_response(chain, prompt, char_counts, timing_data, row_num=None, ann
         logger.warning("Error generating response: %s", e)
         return ""
 
-def extract_json_response(response, annotation_type, min_value=None, max_value=None, options=None):
+def _extract_span_response(response, label_options=None, text=None):
+    """Parse a model response into a normalised list of span dicts.
+
+    Drops spans with missing/invalid offsets, out-of-range offsets, or labels
+    outside ``label_options`` (when provided). When ``text`` is available, the
+    ``text`` field is filled from the offsets to keep the cell self-describing
+    even if the model omitted it.
+    """
+    pattern = regex.compile(r'\{(?:[^{}]|(?R))*\}')
+    array_pattern = regex.compile(r'\[(?:[^\[\]]|(?R))*\]')
+
+    parsed_value = None
+    for json_string in array_pattern.findall(response):
+        try:
+            candidate = json.loads(json_string)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, list):
+            parsed_value = candidate
+            break
+
+    if parsed_value is None:
+        for json_string in pattern.findall(response):
+            try:
+                candidate = json.loads(json_string)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and isinstance(candidate.get("response"), list):
+                parsed_value = candidate["response"]
+                break
+
+    if not isinstance(parsed_value, list):
+        return []
+
+    text_length = len(text) if isinstance(text, str) else None
+    allowed_labels = (
+        {str(opt) for opt in label_options} if label_options else None
+    )
+
+    cleaned = []
+    for entry in parsed_value:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            start = int(entry["start"])
+            end = int(entry["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end <= start or start < 0:
+            continue
+        if text_length is not None and end > text_length:
+            continue
+
+        item = {"start": start, "end": end}
+        item["text"] = text[start:end] if text_length is not None else str(entry.get("text") or "")
+        label = entry.get("label")
+        if label:
+            label = str(label)
+            if allowed_labels is None or label in allowed_labels:
+                item["label"] = label
+        cleaned.append(item)
+    return cleaned
+
+
+def extract_json_response(response, annotation_type, min_value=None, max_value=None, options=None,
+                          label_options=None, text=None):
     """
     Extract and validate JSON response based on annotation type
-    
+
     Args:
         response: Raw model response text that should contain a JSON object.
         annotation_type: Annotation type string such as ``"dropdown"`` or ``"likert"``.
         min_value: Optional integer lower bound for Likert annotations.
         max_value: Optional integer upper bound for Likert annotations.
         options: Optional dropdown option list used to normalize categorical labels.
+        label_options: Allowed labels for span annotations.
+        text: Source text for span annotations (used to validate offsets).
 
     Returns:
-        Parsed response value coerced into the expected annotation format.
+        Parsed response value coerced into the expected annotation format. For
+        ``annotation_type == "span"`` this is a list of span dicts.
     """
+    if annotation_type == "span":
+        return _extract_span_response(response, label_options=label_options, text=text)
     pattern = regex.compile(r'\{(?:[^{}]|(?R))*\}')
     json_strings = pattern.findall(response)
 
@@ -327,18 +441,19 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
     
     return None
 
-def format_prompt(section_name, section_instruction, name, tooltip, annotation_type, 
-               options=None, min_value=None, max_value=None, example=None, 
-               text=None, prompt_type="standard", use_examples=False):
+def format_prompt(section_name, section_instruction, name, tooltip, annotation_type,
+               options=None, min_value=None, max_value=None, example=None,
+               text=None, prompt_type="standard", use_examples=False,
+               label_options=None):
     """
     Format the prompt based on annotation type and specified prompt type
-    
+
     Args:
         section_name: Codebook section name.
         section_instruction: Optional section-level instructions.
         name: Annotation name within the section.
         tooltip: Optional guidance text for the annotation.
-        annotation_type: One of ``"dropdown"``, ``"checkbox"``, ``"likert"``, or ``"textbox"``.
+        annotation_type: One of ``"dropdown"``, ``"checkbox"``, ``"likert"``, ``"textbox"``, or ``"span"``.
         options: Dropdown option list when applicable.
         min_value: Minimum Likert value when applicable.
         max_value: Maximum Likert value when applicable.
@@ -346,21 +461,22 @@ def format_prompt(section_name, section_instruction, name, tooltip, annotation_t
         text: Raw source text being annotated.
         prompt_type: Registered prompt wrapper name or callable wrapper.
         use_examples: Whether examples should be included in the prompt.
+        label_options: Allowed labels for span annotations. Ignored for other types.
 
     Returns:
         Full prompt string ready to send to the model.
     """
     # Get response instructions based on annotation type
     response_instructions = _get_response_instructions(
-        annotation_type, options, min_value, max_value
+        annotation_type, options, min_value, max_value, label_options=label_options
     )
-    
+
     # Build the core prompt that's common to all prompt types
     core_prompt = _build_core_prompt(
-        section_name, section_instruction, name, tooltip, 
+        section_name, section_instruction, name, tooltip,
         response_instructions, example, use_examples
     )
-    
+
     context = PromptContext(
         section_name=section_name,
         section_instruction=section_instruction,
@@ -370,6 +486,7 @@ def format_prompt(section_name, section_instruction, name, tooltip, annotation_t
         options=options,
         min_value=min_value,
         max_value=max_value,
+        label_options=label_options,
         example=example or "",
         text=text or "",
         use_examples=use_examples,
@@ -379,7 +496,13 @@ def format_prompt(section_name, section_instruction, name, tooltip, annotation_t
     return render_prompt(prompt_type, context)
 
 
-def _get_response_instructions(annotation_type, options=None, min_value=None, max_value=None):
+def _get_response_instructions(
+    annotation_type,
+    options=None,
+    min_value=None,
+    max_value=None,
+    label_options=None,
+):
     """Generate type-specific response instructions for a prompt.
 
     Args:
@@ -387,6 +510,8 @@ def _get_response_instructions(annotation_type, options=None, min_value=None, ma
         options: Dropdown options when ``annotation_type`` is ``"dropdown"``.
         min_value: Likert minimum when applicable.
         max_value: Likert maximum when applicable.
+        label_options: Allowed labels when ``annotation_type`` is ``"span"`` and
+            the annotation is labelled. ``None`` or empty for plain highlights.
 
     Returns:
         Instruction string describing the expected response format.
@@ -400,6 +525,22 @@ def _get_response_instructions(annotation_type, options=None, min_value=None, ma
         return f"Respond with a whole number from {min_value} to {max_value} (inclusive), where {min_value} means lowest and {max_value} means highest."
     elif annotation_type == "textbox":
         return "Respond with a brief text explanation."
+    elif annotation_type == "span":
+        if label_options:
+            labels_str = ', or '.join(f'"{option}"' for option in label_options)
+            return (
+                "Respond with a JSON array of objects, each shaped like "
+                '{"start": <int>, "end": <int>, "text": "<quoted span>", '
+                f'"label": <one of {labels_str}>}}. '
+                "Use 0-indexed character offsets into the text. "
+                "Return [] if no spans apply."
+            )
+        return (
+            "Respond with a JSON array of objects, each shaped like "
+            '{"start": <int>, "end": <int>, "text": "<quoted span>"}. '
+            "Use 0-indexed character offsets into the text. "
+            "Return [] if no spans apply."
+        )
     return ""
 
 
@@ -473,7 +614,7 @@ def _normalize_optional_parameter(value):
 
 def classify_text(chain, text, codebook, prompt_type="standard", use_examples=False,
                  char_counts=None, timing_data=None, process_textbox=False, row_num=None,
-                 progress_bar=None, total_rows=None):
+                 progress_bar=None, total_rows=None, process_span=False):
     """Annotate one text row across all sections in a codebook.
 
     Args:
@@ -515,6 +656,11 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
                 progress_bar.skip()
             continue
 
+        if annotation_type == "span" and not process_span:
+            if progress_bar is not None:
+                progress_bar.skip()
+            continue
+
         if not is_annotation_applicable(codebook, section_key, annotation_key, responses):
             responses[column_name] = None
             if progress_bar is not None:
@@ -527,12 +673,15 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
         options = None
         min_value = None
         max_value = None
+        label_options = None
 
         if annotation_type == "dropdown":
             options = annotation.get('options', [])
         elif annotation_type == "likert":
             min_value = annotation.get('min_value')
             max_value = annotation.get('max_value')
+        elif annotation_type == "span":
+            label_options = annotation.get('label_options', []) or None
 
         prompt = format_prompt(
             section_name,
@@ -546,7 +695,8 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
             example,
             text,
             prompt_type=prompt_type,
-            use_examples=use_examples
+            use_examples=use_examples,
+            label_options=label_options,
         )
 
         response_text = generate_response(
@@ -555,7 +705,8 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
             char_counts,
             timing_data,
             row_num=row_num,
-            annotation_name=annotation_full_name
+            annotation_name=annotation_full_name,
+            annotation_type=annotation_type,
         )
         response_value = extract_json_response(
             response_text,
@@ -563,17 +714,25 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
             min_value,
             max_value,
             options=options,
+            label_options=label_options,
+            text=text,
         )
 
-        responses[column_name] = response_value if response_value is not None else None
+        if annotation_type == "span":
+            # Spans round-trip through CSV as JSON-encoded strings so the file
+            # survives standard CSV tooling (the Studio annotation page uses
+            # the same convention).
+            responses[column_name] = serialize_span_value(response_value)
+        else:
+            responses[column_name] = response_value if response_value is not None else None
 
         if progress_bar is not None and row_num is not None and total_rows is not None:
             progress_bar.update(row_num, total_rows, annotation_full_name)
 
     return responses, char_counts, timing_data
 
-def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_type="standard", 
-                              use_examples=False, process_textbox=False):
+def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_type="standard",
+                              use_examples=False, process_textbox=False, process_span=False):
     """Run annotation over every row in an input CSV and write incremental results.
 
     Args:
@@ -592,7 +751,7 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
     
     logger.info("Starting classification of %d rows", len(df))
 
-    annotations_per_row = _count_annotations(codebook, process_textbox)
+    annotations_per_row = _count_annotations(codebook, process_textbox, process_span)
     total_steps = len(df) * annotations_per_row
     progress_bar = _AnnotationProgressBar(total_steps)
     
@@ -625,6 +784,7 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
                 row_num=row_num,
                 progress_bar=progress_bar,
                 total_rows=len(df),
+                process_span=process_span,
             )
 
             # Add annotations to row data
@@ -665,6 +825,7 @@ def run_annotation(
     temperature=None,
     top_p=None,
     process_textbox=False,
+    process_span=False,
     country_iso_code="USA",
     start_ollama_if_needed=True,
 ):
@@ -708,6 +869,7 @@ def run_annotation(
         "prompt_type": prompt_type_name,
         "use_examples": bool(use_examples),
         "process_textbox": bool(process_textbox),
+        "process_span": bool(process_span),
         "country_iso_code": country_iso_code,
         "task_name": task_name,
     }
@@ -746,6 +908,7 @@ def run_annotation(
             prompt_type,
             bool(use_examples),
             bool(process_textbox),
+            bool(process_span),
         )
     finally:
         emissions = tracker.stop()

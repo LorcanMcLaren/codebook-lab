@@ -21,6 +21,7 @@ def _make_context(**overrides) -> PromptContext:
         options=["a", "b"],
         min_value=None,
         max_value=None,
+        label_options=None,
         example="",
         text="Sample text to annotate.",
         use_examples=False,
