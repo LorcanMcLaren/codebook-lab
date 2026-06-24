@@ -52,6 +52,9 @@ class MetricsRunResult:
         cpu_model: CPU metadata recorded by CodeCarbon, if available.
         gpu_model: GPU metadata recorded by CodeCarbon, if available.
         summary_text: Plain-text summary of the main evaluation metrics.
+        run_id: Identifier linking this run's rows across the runs and metrics tables.
+        runs_csv: Filesystem path to the per-run efficiency/config table, if written.
+        n_queries: Number of model inference calls in the annotation run, if available.
     """
 
     output_csv: Path
@@ -68,6 +71,9 @@ class MetricsRunResult:
     cpu_model: str | None
     gpu_model: str | None
     summary_text: str
+    run_id: str | None = None
+    runs_csv: Path | None = None
+    n_queries: int | None = None
 
 
 @dataclass
