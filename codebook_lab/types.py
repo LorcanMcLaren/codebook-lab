@@ -70,6 +70,46 @@ class MetricsRunResult:
     summary_text: str
 
 
+@dataclass
+class HumanReliabilityResult:
+    """Result returned by ``calculate_human_reliability``.
+
+    Attributes:
+        validation_issues: DataFrame of coder-file and label validation issues.
+        pairwise_icr: Pairwise inter-coder reliability metrics.
+        multirater_icr: Multi-rater reliability metrics.
+        disagreements: Item/field rows where coders supplied different labels.
+        summary_text: Markdown summary of validation, reliability, and disagreements.
+        output_dir: Directory where outputs were written, or ``None`` if no output
+            directory was requested.
+    """
+
+    validation_issues: pd.DataFrame
+    pairwise_icr: pd.DataFrame
+    multirater_icr: pd.DataFrame
+    disagreements: pd.DataFrame
+    summary_text: str
+    output_dir: Path | None
+
+
+@dataclass
+class HumanGroundTruthResult:
+    """Result returned by ``build_human_ground_truth``.
+
+    Attributes:
+        ground_truth: Final or provisional human consensus labels.
+        adjudication_queue: Rows that still need adjudication.
+        validation_issues: DataFrame of coder-file and label validation issues.
+        output_dir: Directory where outputs were written, or ``None`` if no output
+            directory was requested.
+    """
+
+    ground_truth: pd.DataFrame
+    adjudication_queue: pd.DataFrame
+    validation_issues: pd.DataFrame
+    output_dir: Path | None
+
+
 @dataclass(frozen=True)
 class ExperimentSpec:
     """Declarative specification for one experiment run in a sweep.

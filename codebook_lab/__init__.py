@@ -12,11 +12,19 @@ from .prompts import (
     list_prompt_wrappers,
     register_prompt_wrapper,
 )
-from .types import AnnotationRunResult, ExperimentRunResult, ExperimentSpec, MetricsRunResult
+from .types import (
+    AnnotationRunResult,
+    ExperimentRunResult,
+    ExperimentSpec,
+    HumanGroundTruthResult,
+    HumanReliabilityResult,
+    MetricsRunResult,
+)
 
 if TYPE_CHECKING:
     from .annotate import run_annotation
     from .experiments import expand_param_grid, resolve_task_dir, run_experiment, run_experiment_grid
+    from .human_reliability import build_human_ground_truth, calculate_human_reliability
     from .metrics import run_metrics
 
 try:
@@ -30,6 +38,8 @@ _LAZY_EXPORTS = {
     "run_annotation": (".annotate", "run_annotation"),
     "run_experiment": (".experiments", "run_experiment"),
     "run_experiment_grid": (".experiments", "run_experiment_grid"),
+    "build_human_ground_truth": (".human_reliability", "build_human_ground_truth"),
+    "calculate_human_reliability": (".human_reliability", "calculate_human_reliability"),
     "run_metrics": (".metrics", "run_metrics"),
 }
 
@@ -38,7 +48,11 @@ __all__ = [
     "AnnotationRunResult",
     "ExperimentRunResult",
     "ExperimentSpec",
+    "HumanGroundTruthResult",
+    "HumanReliabilityResult",
     "MetricsRunResult",
+    "build_human_ground_truth",
+    "calculate_human_reliability",
     "copy_example_task",
     "ensure_ollama_available",
     "ensure_ollama_model",
