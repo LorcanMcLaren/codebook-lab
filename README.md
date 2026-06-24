@@ -53,6 +53,7 @@ The package is organized around a small set of importable modules:
 - `codebook_lab.experiments`: high-level functions for single experiments and multi-run comparisons
 - `codebook_lab.annotate`: lower-level annotation functions
 - `codebook_lab.metrics`: evaluation and metrics functions
+- `codebook_lab.human_reliability`: human coder validation, ICR, disagreement, and ground-truth helpers
 - `codebook_lab.prompts`: prompt wrapper registry for built-in and custom prompt styles
 - `codebook_lab.examples`: helpers for bundled example tasks
 - `codebook_lab.types`: dataclasses for experiment specifications and result objects
@@ -235,6 +236,47 @@ Add multiple values to any field and the package sweeps them automatically. For 
 4. Pass `task_root="my_tasks"` and `task="my-task"` into `ExperimentSpec(...)` when you run experiments.
 
 If you are still designing a task and do not yet have human-coded labels, you can run annotation with `codebook_lab.run_annotation(...)` on an unlabeled CSV and add `ground-truth.csv` later when you want to score model performance with `codebook_lab.run_metrics(...)`.
+
+## Human Reliability And Adjudication
+
+When multiple human coders annotate the same items, CodeBook Lab can validate the coder CSVs, calculate inter-coder reliability, find disagreements, and build a consensus `ground-truth.csv`.
+
+```python
+from codebook_lab import build_human_ground_truth, calculate_human_reliability
+
+coder_csvs = {
+    "coder1": "annotations/coder1.csv",
+    "coder2": "annotations/coder2.csv",
+    "coder3": "annotations/coder3.csv",
+}
+
+reliability = calculate_human_reliability(
+    codebook_path="codebook.json",
+    coder_csvs=coder_csvs,
+    output_dir="outputs/human_reliability",
+)
+
+ground_truth = build_human_ground_truth(
+    codebook_path="codebook.json",
+    coder_csvs=coder_csvs,
+    output_dir="outputs/ground_truth",
+)
+```
+
+Each coder CSV must contain a stable item identifier column. The default is `sample_id`; pass `id_column="..."` to use a different column. By default, coder assignments are inferred from the submitted files. To validate expected coverage, pass an optional assignment CSV in either long format (`sample_id,coder_id`) or wide format (`sample_id,ra_1,ra_2,...`).
+
+Reliability outputs include `validation_issues.csv`, `pairwise_icr.csv`, `multirater_icr.csv`, `disagreements.csv`, and `summary.md`. Ground-truth outputs include `ground-truth.csv`, `adjudication_queue.csv`, and `validation_issues.csv`.
+
+Rows without a strict majority are written to `adjudication_queue.csv`. Open that queue in CodeBook Studio's adjudication mode, fill the unresolved blanks, export the completed queue, then rebuild:
+
+```python
+resolved = build_human_ground_truth(
+    codebook_path="codebook.json",
+    coder_csvs=coder_csvs,
+    adjudications_csv="adjudication_queue.csv",
+    output_dir="outputs/ground_truth_resolved",
+)
+```
 
 ## Advanced Customization
 

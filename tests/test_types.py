@@ -9,6 +9,8 @@ from codebook_lab.types import (
     AnnotationRunResult,
     ExperimentRunResult,
     ExperimentSpec,
+    HumanGroundTruthResult,
+    HumanReliabilityResult,
     MetricsRunResult,
 )
 
@@ -87,3 +89,28 @@ class TestMetricsRunResult:
         assert result.metrics_by_column["col_a"]["accuracy"] == 0.9
         assert "Run Summary" in result.summary_text
         assert result.output_chars == 50
+
+
+class TestHumanReliabilityResult:
+    def test_construction(self):
+        result = HumanReliabilityResult(
+            validation_issues=None,
+            pairwise_icr=None,
+            multirater_icr=None,
+            disagreements=None,
+            summary_text="summary",
+            output_dir=Path("out"),
+        )
+        assert result.summary_text == "summary"
+        assert result.output_dir == Path("out")
+
+
+class TestHumanGroundTruthResult:
+    def test_construction(self):
+        result = HumanGroundTruthResult(
+            ground_truth=None,
+            adjudication_queue=None,
+            validation_issues=None,
+            output_dir=None,
+        )
+        assert result.output_dir is None
