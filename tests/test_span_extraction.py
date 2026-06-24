@@ -54,6 +54,16 @@ def test_without_text_uses_model_text_and_skips_range_check():
     assert result == [{"start": 100, "end": 110, "text": "model-said"}]
 
 
-def test_garbage_response_returns_empty_list():
-    assert _extract_span_response("the model refused to answer", text=TEXT) == []
-    assert _extract_span_response("", text=TEXT) == []
+def test_garbage_response_returns_none():
+    # No parseable JSON structure -> None (an invalid response, eligible for retry),
+    # distinct from a parsed-but-empty list.
+    assert _extract_span_response("the model refused to answer", text=TEXT) is None
+    assert _extract_span_response("", text=TEXT) is None
+
+
+def test_parsed_empty_list_is_valid_not_none():
+    # An explicit empty array is a legitimate "no spans apply" answer.
+    assert _extract_span_response("[]", text=TEXT) == []
+    assert _extract_span_response('{"response": []}', text=TEXT) == []
+    # A parsed array whose only span is invalid cleans down to [] (still valid).
+    assert _extract_span_response('[{"start": 5, "end": 5}]', text=TEXT) == []

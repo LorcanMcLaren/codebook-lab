@@ -308,7 +308,11 @@ def _extract_span_response(response, label_options=None, text=None):
                 break
 
     if not isinstance(parsed_value, list):
-        return []
+        # No JSON array / {"response": [...]} structure was found at all: treat
+        # this as an invalid response (None) so callers can retry. An empty but
+        # successfully parsed list is a valid answer ("no spans apply") and is
+        # returned as [] by the cleaning loop below.
+        return None
 
     text_length = len(text) if isinstance(text, str) else None
     allowed_labels = (
@@ -391,11 +395,13 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
                         return 1
                     elif response_value.lower() in ["no", "false", "0"]:
                         return 0
-                # Default to 0 if invalid
-                return 0
+                # No recognizable boolean value: invalid, so callers can
+                # retry/record null rather than silently defaulting to "No".
+                return None
             elif annotation_type == "textbox":
-                # Return as string
-                return str(response_value).strip()
+                # Empty text counts as no answer (invalid -> retry/null).
+                stripped = str(response_value).strip()
+                return stripped or None
             elif annotation_type == "likert":
                 # Validate is within range and convert to int
                 try:
@@ -404,10 +410,9 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
                         return max(min_value, min(max_value, value))  # Clamp to range
                     return value
                 except (ValueError, TypeError):
-                    # If not a valid number, return the middle of the scale if available
-                    if min_value is not None and max_value is not None:
-                        return (min_value + max_value) // 2
-                    return response_value
+                    # Not a valid number: invalid, so callers can retry/record
+                    # null rather than silently defaulting to the scale midpoint.
+                    return None
             
             # Fallback
             return str(response_value).strip() if isinstance(response_value, str) else response_value
@@ -424,7 +429,7 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
             return 1
         elif "no" in response.lower() or "false" in response.lower():
             return 0
-        return 0
+        return None
     elif annotation_type == "likert" and min_value is not None and max_value is not None:
         # Try to find a number in the response
         numbers = regex.findall(r'\d+', response)
@@ -435,10 +440,10 @@ def extract_json_response(response, annotation_type, min_value=None, max_value=N
                     return value
             except ValueError:
                 continue
-        return (min_value + max_value) // 2  # Default to middle value
+        return None  # No in-range number found: invalid -> retry/null
     elif annotation_type == "textbox":
-        return stripped_response
-    
+        return stripped_response or None
+
     return None
 
 def format_prompt(section_name, section_instruction, name, tooltip, annotation_type,
@@ -612,9 +617,99 @@ def _normalize_optional_parameter(value):
         return None
     return value
 
+RETRY_STRATEGIES = ("identical", "reprompt", "temperature")
+DEFAULT_RETRY_TEMPERATURE = 0.3
+_RETRY_REMINDER = (
+    "\n\nIMPORTANT: A previous attempt could not be parsed. Respond with ONLY the "
+    "JSON described above, in exactly that format, with no extra commentary."
+)
+
+
+def normalize_retry_strategy(strategy):
+    """Return a supported retry strategy, falling back to ``"identical"``."""
+    strategy = str(strategy or "identical").strip().lower()
+    return strategy if strategy in RETRY_STRATEGIES else "identical"
+
+
+def _generate_and_extract(
+    *,
+    chain,
+    retry_chain,
+    prompt,
+    char_counts,
+    timing_data,
+    row_num,
+    annotation_full_name,
+    annotation_type,
+    min_value,
+    max_value,
+    options,
+    label_options,
+    text,
+    retries,
+    retry_strategy,
+):
+    """Generate and extract one annotation, retrying invalid responses.
+
+    A response is "invalid" when :func:`extract_json_response` returns ``None``
+    (unparseable, empty, or out-of-codebook). On each retry the request is
+    re-issued according to ``retry_strategy``:
+
+    * ``"identical"`` (default): re-run the same prompt and model.
+    * ``"reprompt"``: append a short format reminder to the prompt.
+    * ``"temperature"``: re-run against ``retry_chain`` (a model built at a
+      higher temperature) so a deterministic config can still vary its output.
+
+    Returns the extracted value, or ``None`` if every attempt was invalid.
+    """
+    strategy = normalize_retry_strategy(retry_strategy)
+    attempts = max(1, 1 + int(retries))
+    for attempt in range(attempts):
+        active_chain = chain
+        active_prompt = prompt
+        if attempt > 0:
+            if strategy == "reprompt":
+                active_prompt = prompt + _RETRY_REMINDER
+            elif strategy == "temperature" and retry_chain is not None:
+                active_chain = retry_chain
+
+        response_text = generate_response(
+            active_chain,
+            active_prompt,
+            char_counts,
+            timing_data,
+            row_num=row_num,
+            annotation_name=annotation_full_name,
+            annotation_type=annotation_type,
+        )
+        value = extract_json_response(
+            response_text,
+            annotation_type,
+            min_value,
+            max_value,
+            options=options,
+            label_options=label_options,
+            text=text,
+        )
+        if value is not None:
+            return value
+        if attempt + 1 < attempts:
+            logger.info(
+                "Invalid response for %s (attempt %d/%d); retrying with strategy '%s'.",
+                annotation_full_name, attempt + 1, attempts, strategy,
+            )
+
+    logger.warning(
+        "No valid response for %s after %d attempt(s); recording null.",
+        annotation_full_name, attempts,
+    )
+    return None
+
+
 def classify_text(chain, text, codebook, prompt_type="standard", use_examples=False,
                  char_counts=None, timing_data=None, process_textbox=False, row_num=None,
-                 progress_bar=None, total_rows=None, process_span=False):
+                 progress_bar=None, total_rows=None, process_span=False,
+                 retries=1, retry_strategy="identical", retry_chain=None):
     """Annotate one text row across all sections in a codebook.
 
     Args:
@@ -699,32 +794,33 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
             label_options=label_options,
         )
 
-        response_text = generate_response(
-            chain,
-            prompt,
-            char_counts,
-            timing_data,
+        response_value = _generate_and_extract(
+            chain=chain,
+            retry_chain=retry_chain,
+            prompt=prompt,
+            char_counts=char_counts,
+            timing_data=timing_data,
             row_num=row_num,
-            annotation_name=annotation_full_name,
+            annotation_full_name=annotation_full_name,
             annotation_type=annotation_type,
-        )
-        response_value = extract_json_response(
-            response_text,
-            annotation_type,
-            min_value,
-            max_value,
+            min_value=min_value,
+            max_value=max_value,
             options=options,
             label_options=label_options,
             text=text,
+            retries=retries,
+            retry_strategy=retry_strategy,
         )
 
         if annotation_type == "span":
             # Spans round-trip through CSV as JSON-encoded strings so the file
-            # survives standard CSV tooling (the Studio annotation page uses
-            # the same convention).
+            # survives standard CSV tooling (the Studio annotation page uses the
+            # same convention). A None result (no valid response) serializes to "".
             responses[column_name] = serialize_span_value(response_value)
         else:
-            responses[column_name] = response_value if response_value is not None else None
+            # response_value is None when no valid response was extracted, which
+            # is stored as a blank cell rather than a fabricated default.
+            responses[column_name] = response_value
 
         if progress_bar is not None and row_num is not None and total_rows is not None:
             progress_bar.update(row_num, total_rows, annotation_full_name)
@@ -732,7 +828,8 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
     return responses, char_counts, timing_data
 
 def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_type="standard",
-                              use_examples=False, process_textbox=False, process_span=False):
+                              use_examples=False, process_textbox=False, process_span=False,
+                              retries=1, retry_strategy="identical", retry_chain=None):
     """Run annotation over every row in an input CSV and write incremental results.
 
     Args:
@@ -785,6 +882,9 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
                 progress_bar=progress_bar,
                 total_rows=len(df),
                 process_span=process_span,
+                retries=retries,
+                retry_strategy=retry_strategy,
+                retry_chain=retry_chain,
             )
 
             # Add annotations to row data
@@ -828,6 +928,9 @@ def run_annotation(
     process_span=False,
     country_iso_code="USA",
     start_ollama_if_needed=True,
+    retries=1,
+    retry_strategy="identical",
+    retry_temperature=DEFAULT_RETRY_TEMPERATURE,
 ):
     """Run one annotation job and persist its outputs to disk.
 
@@ -872,6 +975,8 @@ def run_annotation(
         "process_span": bool(process_span),
         "country_iso_code": country_iso_code,
         "task_name": task_name,
+        "retries": int(retries),
+        "retry_strategy": normalize_retry_strategy(retry_strategy),
     }
     if temperature is not None:
         config["temperature"] = temperature
@@ -900,6 +1005,12 @@ def run_annotation(
 
     try:
         chain = setup_model(model, temperature, top_p)
+        # For the "temperature" retry strategy, build a second chain at a higher
+        # temperature so retries can diverge from an otherwise deterministic run.
+        retry_strategy_name = normalize_retry_strategy(retry_strategy)
+        retry_chain = None
+        if retry_strategy_name == "temperature":
+            retry_chain = setup_model(model, retry_temperature, top_p)
         classified_df, char_counts, timing_data = apply_classification_to_csv(
             str(csv_path),
             str(output_path),
@@ -909,6 +1020,9 @@ def run_annotation(
             bool(use_examples),
             bool(process_textbox),
             bool(process_span),
+            retries=retries,
+            retry_strategy=retry_strategy_name,
+            retry_chain=retry_chain,
         )
     finally:
         emissions = tracker.stop()

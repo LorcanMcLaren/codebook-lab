@@ -121,14 +121,12 @@ def test_extract_json_response_normalizes_dropdown_options():
 
 def test_classify_text_stores_none_for_invalid_dropdown_outputs(monkeypatch):
     codebook = _conditional_codebook()
-    responses = iter(
-        [
-            "JSON\n",
-        ]
-    )
+    calls = {"count": 0}
 
     def fake_generate_response(*args, **kwargs):
-        return next(responses)
+        # Always invalid, so every attempt (including retries) fails.
+        calls["count"] += 1
+        return "JSON\n"
 
     monkeypatch.setattr("codebook_lab.annotate.generate_response", fake_generate_response)
 
@@ -142,3 +140,5 @@ def test_classify_text_stores_none_for_invalid_dropdown_outputs(monkeypatch):
 
     assert result["1. Relevance_is_relevant"] is None
     assert result["2. Stance_stance"] is None
+    # The single applicable annotation is attempted twice (initial + one retry).
+    assert calls["count"] == 2
