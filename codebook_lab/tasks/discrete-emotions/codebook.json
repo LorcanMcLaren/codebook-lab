@@ -1,0 +1,52 @@
+{
+  "header_column": "title",
+  "text_column": "text",
+  "metadata_columns": ["speaker", "source"],
+  "section_1": {
+    "section_name": "Dominant Emotion",
+    "section_instruction": "Read the short passage and identify the single emotion that most strongly comes through. If no emotion is clearly expressed, choose 'none'. Then highlight the exact phrase that justifies your choice.",
+    "annotations": {
+      "annotation_1": {
+        "name": "Dominant emotion",
+        "type": "dropdown",
+        "tooltip": "Pick the single emotion that dominates the passage. Use 'none' only when the text is purely descriptive or procedural.",
+        "example": "Text: \n\"After months of uncertainty, the team finally celebrated their victory with tears of relief and beaming smiles.\"\n\nResponse: \n{\"response\": \"joy\"}",
+        "options": ["joy", "sadness", "anger", "fear", "surprise", "disgust", "none"]
+      },
+      "annotation_2": {
+        "name": "Evidence",
+        "type": "span",
+        "tooltip": "Highlight the phrase or sentence that most strongly supports your choice of dominant emotion. Keep the span tight — just enough to make the judgement defensible.",
+        "example": "Text: \n\"Each footstep behind her grew louder; her heart pounded as she fumbled for the keys.\"\n\nResponse: \n{\"response\": [{\"start\": 38, \"end\": 55, \"text\": \"her heart pounded\"}]}",
+        "label_options": []
+      }
+    }
+  },
+  "section_2": {
+    "section_name": "Intensity",
+    "section_instruction": "Rate the intensity of the dominant emotion on a 1–5 scale, where 1 is barely noticeable and 5 is overwhelming.",
+    "annotations": {
+      "annotation_1": {
+        "name": "Intensity",
+        "type": "likert",
+        "tooltip": "Use 5 only when the emotional expression is unmistakable and saturated; use 1 when the emotion is implied but very subtle.",
+        "example": "Text: \n\"The mere sight of the corruption made her stomach turn — how could they have let this happen?\"\n\nResponse: \n{\"response\": 4}",
+        "min_value": 1,
+        "max_value": 5
+      }
+    }
+  },
+  "section_3": {
+    "section_name": "Emotion Markers",
+    "section_instruction": "Highlight every phrase that signals a discrete emotion and tag each highlight with the matching emotion label. Multiple highlights per text are expected when the passage carries more than one emotion.",
+    "annotations": {
+      "annotation_1": {
+        "name": "Emotion markers",
+        "type": "span",
+        "tooltip": "Tag each highlight with the emotion it most directly conveys. Keep spans tight; overlap only when the same phrase carries two emotions.",
+        "example": "Text: \n\"He laughed bitterly through the tears, unable to decide whether to mourn or celebrate.\"\n\nResponse: \n{\"response\": [{\"start\": 3, \"end\": 19, \"text\": \"laughed bitterly\", \"label\": \"joy\"}, {\"start\": 32, \"end\": 37, \"text\": \"tears\", \"label\": \"sadness\"}]}",
+        "label_options": ["joy", "sadness", "anger", "fear", "surprise", "disgust"]
+      }
+    }
+  }
+}
