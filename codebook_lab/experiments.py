@@ -49,10 +49,11 @@ def expand_param_grid(param_grid: dict) -> list[ExperimentSpec]:
     temperatures = _coerce_sweep(param_grid.get("temperatures"), None)
     top_ps = _coerce_sweep(param_grid.get("top_ps"), None)
     process_textboxes = _coerce_sweep(param_grid.get("process_textboxes"), False)
+    process_spans = _coerce_sweep(param_grid.get("process_spans"), False)
     country_iso_code = str(param_grid.get("country_iso_code") or "USA")
 
     specs = []
-    for task, model, use_examples, prompt_type, temperature, top_p, process_textbox in product(
+    for task, model, use_examples, prompt_type, temperature, top_p, process_textbox, process_span in product(
         tasks,
         models,
         use_examples_values,
@@ -60,6 +61,7 @@ def expand_param_grid(param_grid: dict) -> list[ExperimentSpec]:
         temperatures,
         top_ps,
         process_textboxes,
+        process_spans,
     ):
         specs.append(
             ExperimentSpec(
@@ -70,6 +72,7 @@ def expand_param_grid(param_grid: dict) -> list[ExperimentSpec]:
                 temperature=_normalize_optional_float(temperature),
                 top_p=_normalize_optional_float(top_p),
                 process_textbox=_coerce_bool(process_textbox),
+                process_span=_coerce_bool(process_span),
                 country_iso_code=country_iso_code,
             )
         )
@@ -110,6 +113,7 @@ def build_experiment_paths(
     temperature,
     top_p,
     process_textbox: bool,
+    process_span: bool = False,
     output_root: str | Path = "outputs",
     timestamp: str | None = None,
 ) -> dict[str, Path | str]:
@@ -143,6 +147,9 @@ def build_experiment_paths(
     if process_textbox:
         experiment_dir = Path(f"{experiment_dir}_textbox")
         model_id = f"{model_id}_textbox"
+    if process_span:
+        experiment_dir = Path(f"{experiment_dir}_span")
+        model_id = f"{model_id}_span"
 
     experiment_dir = Path(f"{experiment_dir}_{timestamp}")
 
@@ -216,6 +223,7 @@ def run_experiment(
         temperature=spec.temperature,
         top_p=spec.top_p,
         process_textbox=spec.process_textbox,
+        process_span=spec.process_span,
         output_root=output_root,
         timestamp=timestamp,
     )
@@ -234,6 +242,7 @@ def run_experiment(
         temperature=spec.temperature,
         top_p=spec.top_p,
         process_textbox=spec.process_textbox,
+        process_span=spec.process_span,
         country_iso_code=spec.country_iso_code,
         start_ollama_if_needed=start_ollama_if_needed,
     )
@@ -252,6 +261,7 @@ def run_experiment(
         prompt_type=spec.prompt_type,
         use_examples=spec.use_examples,
         process_textbox=spec.process_textbox,
+        process_span=spec.process_span,
         emissions_file=paths["emissions_file"],
         experiment_directory=paths["experiment_directory"],
         timestamp=paths["timestamp"],

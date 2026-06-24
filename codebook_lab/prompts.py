@@ -13,10 +13,12 @@ class PromptContext:
         section_instruction: Optional section-level instructions from the codebook.
         annotation_name: Human-readable annotation label inside the section.
         tooltip: Optional annotation guidance or tooltip text.
-        annotation_type: One of ``"dropdown"``, ``"checkbox"``, ``"likert"``, or ``"textbox"``.
+        annotation_type: One of ``"dropdown"``, ``"checkbox"``, ``"likert"``, ``"textbox"``, or ``"span"``.
         options: Dropdown options when ``annotation_type`` is ``"dropdown"``, otherwise ``None``.
         min_value: Minimum Likert value when applicable, otherwise ``None``.
         max_value: Maximum Likert value when applicable, otherwise ``None``.
+        label_options: Allowed labels when ``annotation_type`` is ``"span"`` and the
+            annotation is labelled; ``None`` for plain highlights or non-span types.
         example: Example block extracted from the codebook, if present.
         text: Raw source text being annotated.
         use_examples: Whether examples should be included in the rendered prompt.
@@ -32,6 +34,7 @@ class PromptContext:
     options: list[str] | None
     min_value: int | None
     max_value: int | None
+    label_options: list[str] | None
     example: str
     text: str
     use_examples: bool

@@ -4,6 +4,8 @@ from typing import Any
 
 import pandas as pd
 
+from .span_value import parse_span_value
+
 
 def get_sorted_annotation_keys(section_content: dict[str, Any]) -> list[str]:
     """Return annotation keys in the same stable order used by CodeBook Studio."""
@@ -64,10 +66,21 @@ def get_annotation_condition(annotation: dict[str, Any]) -> dict[str, Any] | Non
 
 def normalize_annotation_response_value(annotation: dict[str, Any], value: Any) -> Any:
     """Coerce stored responses into stable comparable values."""
-    if pd.isna(value):
-        return None
-
     annotation_type = annotation.get("type", "dropdown")
+    if annotation_type == "span":
+        # Spans round-trip as a list of dicts; preserve the structure so
+        # downstream code (metrics, conditions) can reason about them. Spans
+        # are not valid condition triggers, so the value is mostly inert here.
+        if isinstance(value, list):
+            return value
+        return parse_span_value(value)
+
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return value
+
     if annotation_type == "dropdown":
         normalized = str(value).strip().strip("`").strip()
         if normalized == "":

@@ -9,6 +9,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, cohen_kappa_score
 import numpy as np
 import os
+import uuid
 from pathlib import Path
 import json
 from datetime import datetime
@@ -23,6 +24,7 @@ from .conditions import (
     get_annotation_lookup,
     normalize_annotation_response_value,
 )
+from .span_metrics import compute_span_metrics
 from .types import MetricsRunResult
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,9 @@ def extract_column_info_from_codebook(codebook_path):
         elif annotation_type == 'likert':
             properties['min_value'] = annotation.get('min_value', 0)
             properties['max_value'] = annotation.get('max_value', 5)
+        elif annotation_type == 'span':
+            label_options = annotation.get('label_options') or []
+            properties['label_options'] = list(label_options)
 
         condition = get_annotation_condition(annotation)
         if condition:
@@ -330,16 +335,18 @@ def read_timing_data(timing_file):
         timing_file: Path to ``timing_data.json``.
 
     Returns:
-        Tuple of ``(total_inference_time, avg_inference_time)``.
+        Tuple of ``(total_inference_time, avg_inference_time, n_queries)``, where
+        ``n_queries`` is the number of model inference calls.
     """
     try:
         with open(timing_file, 'r') as file:
             timing_data = json.load(file)
-            return (timing_data.get('total_inference_time', None), 
-                   timing_data.get('avg_inference_time', None))
+            return (timing_data.get('total_inference_time', None),
+                   timing_data.get('avg_inference_time', None),
+                   timing_data.get('inference_count', None))
     except Exception as e:
         logger.warning("Error reading timing file: %s", e)
-        return None, None
+        return None, None, None
     
 def read_char_counts(char_counts_file):
     """Read prompt and response character counts from a JSON sidecar file.
@@ -415,7 +422,14 @@ def quadratic_weighted_kappa(y_true, y_pred):
     
     return k
 
-def evaluate_performance(merged_df, columns_to_compare, column_info, process_textbox=False):
+def evaluate_performance(
+    merged_df,
+    columns_to_compare,
+    column_info,
+    process_textbox=False,
+    process_span=False,
+    texts=None,
+):
     """Compute evaluation metrics for each requested annotation column.
 
     Args:
@@ -423,6 +437,10 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
         columns_to_compare: List of annotation columns to evaluate.
         column_info: Metadata mapping produced by :func:`extract_column_info_from_codebook`.
         process_textbox: Whether textbox similarity metrics should be calculated.
+        process_span: Whether span metrics should be calculated.
+        texts: Optional iterable of source texts (one per row in ``merged_df``)
+            used to evaluate span annotations. Required when ``process_span``
+            is True and any span columns are present.
 
     Returns:
         Tuple of metric dictionaries and report text keyed by annotation column name.
@@ -452,6 +470,11 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
     bertscore_r_scores = {col: float('nan') for col in columns_to_compare}
     bertscore_f1_scores = {col: float('nan') for col in columns_to_compare}
 
+    # Span metrics
+    token_f1_scores = {col: float('nan') for col in columns_to_compare}
+    exact_match_f1_scores = {col: float('nan') for col in columns_to_compare}
+    char_iou_scores = {col: float('nan') for col in columns_to_compare}
+
     for column in columns_to_compare:
         column_gt = f'{column}_gt'
         column_llm = f'{column}_llm'
@@ -471,7 +494,50 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
             logger.info("Skipping textbox column '%s' as process_textbox is False", column)
             reports[column] = "Textbox processing skipped."
             continue
-            
+
+        # Skip span annotations if process_span is False
+        if annotation_type == 'span' and not process_span:
+            logger.info("Skipping span column '%s' as process_span is False", column)
+            reports[column] = "Span processing skipped."
+            continue
+
+        # Span annotations get a dedicated metric pipeline and don't use the
+        # downstream classification-style code path.
+        if annotation_type == 'span':
+            applicable_mask = _get_applicable_row_mask(merged_df, column, column_info, side="gt")
+            gt_values = merged_df.loc[applicable_mask, column_gt]
+            pred_values = merged_df.loc[applicable_mask, column_llm]
+            if texts is None:
+                logger.warning(
+                    "Cannot compute span metrics for column '%s' without source texts.",
+                    column,
+                )
+                reports[column] = "Span metrics skipped: source texts unavailable."
+                continue
+            texts_series = pd.Series(list(texts), index=merged_df.index)
+            row_texts = texts_series.loc[applicable_mask]
+            label_options = column_info.get(column, {}).get('label_options') or None
+            try:
+                span_metrics = compute_span_metrics(
+                    row_texts.fillna('').astype(str).tolist(),
+                    gt_values.tolist(),
+                    pred_values.tolist(),
+                    label_options=label_options,
+                )
+                token_f1_scores[column] = span_metrics['token_f1']
+                exact_match_f1_scores[column] = span_metrics['exact_match_f1']
+                char_iou_scores[column] = span_metrics['char_iou']
+                reports[column] = (
+                    "Span field, specialized metrics calculated "
+                    f"(token_f1={span_metrics['token_f1']:.3f}, "
+                    f"exact_match_f1={span_metrics['exact_match_f1']:.3f}, "
+                    f"char_iou={span_metrics['char_iou']:.3f})."
+                )
+            except Exception as exc:
+                logger.warning("Error calculating span metrics for column '%s': %s", column, exc)
+                reports[column] = f"Error in span metrics: {exc}"
+            continue
+
         applicable_mask = _get_applicable_row_mask(merged_df, column, column_info, side="gt")
         y_true = merged_df.loc[applicable_mask, column_gt]
         y_pred = merged_df.loc[applicable_mask, column_llm]
@@ -623,13 +689,14 @@ def evaluate_performance(merged_df, columns_to_compare, column_info, process_tex
             logger.debug("Current state - y_pred sample:\n%s", y_pred.head().to_string())
             reports[column] = f"Error: {str(e)}"
 
-    return (accuracy_scores, precision_scores, recall_scores, f1_scores, 
-            cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores, 
-            spearman_corr_scores, quadratic_kappa_scores, 
-            norm_levenshtein_scores, bleu_scores, 
+    return (accuracy_scores, precision_scores, recall_scores, f1_scores,
+            cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
+            spearman_corr_scores, quadratic_kappa_scores,
+            norm_levenshtein_scores, bleu_scores,
             rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
-            cosine_scores, 
+            cosine_scores,
             bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+            token_f1_scores, exact_match_f1_scores, char_iou_scores,
             reports)
 
 def evaluate_textbox_performance(y_true, y_pred):
@@ -858,266 +925,163 @@ def evaluate_textbox_performance(y_true, y_pred):
     
     return results
 
-def append_metrics_to_csv(output_csv, label, model_id, quantization_type, temperature, top_p, codebook_path,
-                         columns_to_compare, accuracy_scores, precision_scores, recall_scores,
-                         f1_scores, cohen_kappa_scores, krippendorff_alpha_scores,
-                         percentage_agreement_scores, spearman_corr_scores, quadratic_kappa_scores, 
-                         norm_levenshtein_scores, bleu_scores, 
-                         rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
-                         cosine_scores, 
-                         bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
-                         column_info,
-                         prompt_type=None, use_examples=None, process_textbox=None,
-                         emissions=None, energy_consumed=None, cpu_model=None, gpu_model=None,
-                         total_inference_time=None, avg_inference_time=None,
-                         input_chars=None, output_chars=None,
-                         timestamp=None, experiment_directory=None):
-    """Append one experiment's metrics to the aggregate CSV log.
+_CATEGORICAL_METRICS = ("accuracy", "precision", "recall", "f1", "cohen_kappa", "krippendorff_alpha")
+_LIKERT_METRICS = ("spearman_corr", "quadratic_kappa")
+_TEXTBOX_METRICS = (
+    "norm_levenshtein", "bleu", "rouge1_f", "rouge2_f", "rougeL_f",
+    "cosine_similarity", "bertscore_precision", "bertscore_recall", "bertscore_f1",
+)
+_SPAN_METRICS = ("token_f1", "exact_match_f1", "char_iou")
 
-    Args:
-        output_csv: Path to the aggregate metrics CSV to create or update.
-        label: Experiment label, usually the task name.
-        model_id: Stable identifier for the model and prompt configuration.
-        quantization_type: Optional quantization metadata string.
-        temperature: Optional temperature metadata value.
-        top_p: Optional top-p metadata value.
-        codebook_path: Path to the codebook used for the experiment.
-        columns_to_compare: Annotation columns included in the evaluation.
-        accuracy_scores: Per-column accuracy values.
-        precision_scores: Per-column precision values.
-        recall_scores: Per-column recall values.
-        f1_scores: Per-column F1 values.
-        cohen_kappa_scores: Per-column Cohen's kappa values.
-        krippendorff_alpha_scores: Per-column Krippendorff's alpha values.
-        percentage_agreement_scores: Per-column exact agreement values.
-        spearman_corr_scores: Per-column Spearman correlations for Likert fields.
-        quadratic_kappa_scores: Per-column quadratic weighted kappa values.
-        norm_levenshtein_scores: Per-column normalized Levenshtein scores.
-        bleu_scores: Per-column BLEU scores.
-        rouge1_f_scores: Per-column ROUGE-1 F values.
-        rouge2_f_scores: Per-column ROUGE-2 F values.
-        rougeL_f_scores: Per-column ROUGE-L F values.
-        cosine_scores: Per-column cosine similarity scores.
-        bertscore_p_scores: Per-column BERTScore precision values.
-        bertscore_r_scores: Per-column BERTScore recall values.
-        bertscore_f1_scores: Per-column BERTScore F1 values.
-        column_info: Annotation metadata mapping from the codebook.
-        prompt_type: Optional prompt wrapper name stored as metadata.
-        use_examples: Optional boolean-like metadata flag.
-        process_textbox: Optional boolean-like metadata flag.
-        emissions: Optional emissions estimate in kilograms of CO2 equivalent.
-        energy_consumed: Optional energy consumption in kilowatt-hours.
-        cpu_model: Optional CPU model string.
-        gpu_model: Optional GPU model string.
-        total_inference_time: Optional total inference time in seconds.
-        avg_inference_time: Optional average inference time in seconds.
-        input_chars: Optional total prompt character count.
-        output_chars: Optional total response character count.
-        timestamp: Optional timestamp string.
-        experiment_directory: Optional path to the per-run output directory.
+RUN_COLUMNS = [
+    "run_id", "timestamp", "label", "model_id", "quantization_type", "temperature", "top_p",
+    "prompt_type", "use_examples", "process_textbox", "process_span",
+    "codebook_path", "experiment_directory", "n_queries",
+    "total_inference_time_s", "avg_inference_time_per_query_s",
+    "total_input_chars", "avg_input_chars_per_query",
+    "total_output_chars", "avg_output_chars_per_query",
+    "total_energy_kwh", "avg_energy_kwh_per_query",
+    "total_emissions_kg", "avg_emissions_kg_per_query",
+    "cpu_model", "gpu_model",
+]
+METRIC_COLUMNS = ["run_id", "column", "annotation_type", "metric", "value"]
+
+
+def _metric_names_for_type(annotation_type):
+    """Return the ordered metric names recorded for one annotation type."""
+    metrics = []
+    if annotation_type != "span":
+        metrics.append("percentage_agreement")
+    if annotation_type in ("dropdown", "checkbox", "likert"):
+        metrics.extend(_CATEGORICAL_METRICS)
+    if annotation_type == "likert":
+        metrics.extend(_LIKERT_METRICS)
+    if annotation_type == "textbox":
+        metrics.extend(_TEXTBOX_METRICS)
+    if annotation_type == "span":
+        metrics.extend(_SPAN_METRICS)
+    return metrics
+
+
+def _per_query(total, n_queries):
+    """Return ``total / n_queries`` (per-query average), or None if not computable."""
+    if total is None or not n_queries:
+        return None
+    try:
+        return total / n_queries
+    except (TypeError, ZeroDivisionError):
+        return None
+
+
+def _append_rows(path, rows, columns):
+    """Append rows to a tidy CSV with a fixed schema, writing a header if new."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    pd.DataFrame(rows, columns=columns).to_csv(path, mode="a", header=write_header, index=False)
+
+
+def write_metrics(metrics_csv, runs_csv, run_id, label, model_id, quantization_type, temperature, top_p,
+                  codebook_path, columns_to_compare, accuracy_scores, precision_scores, recall_scores,
+                  f1_scores, cohen_kappa_scores, krippendorff_alpha_scores,
+                  percentage_agreement_scores, spearman_corr_scores, quadratic_kappa_scores,
+                  norm_levenshtein_scores, bleu_scores,
+                  rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
+                  cosine_scores,
+                  bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+                  token_f1_scores, exact_match_f1_scores, char_iou_scores,
+                  column_info,
+                  prompt_type=None, use_examples=None, process_textbox=None, process_span=None,
+                  emissions=None, energy_consumed=None, cpu_model=None, gpu_model=None,
+                  total_inference_time=None, avg_inference_time=None,
+                  input_chars=None, output_chars=None, n_queries=None,
+                  timestamp=None, experiment_directory=None):
+    """Record one evaluation run to the tidy two-table metrics log.
+
+    Writes two CSVs with stable schemas (so appends never widen the file):
+
+    * ``runs_csv``: one row per run, keyed by ``run_id``, holding the run
+      configuration plus efficiency metrics. Every numeric efficiency metric is
+      stored as both a total and a per-query average (per model inference call).
+    * ``metrics_csv``: long/tidy table, one row per ``(run_id, column, metric)``
+      with the metric ``value``. Only metrics applicable to each annotation
+      type are emitted.
     """
     if timestamp is None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    file_exists = os.path.isfile(output_csv)
+    # --- runs table: config + efficiency (totals and per-query averages) ---
+    run_row = {
+        "run_id": run_id,
+        "timestamp": timestamp,
+        "label": label,
+        "model_id": model_id,
+        "quantization_type": quantization_type,
+        "temperature": temperature,
+        "top_p": top_p,
+        "prompt_type": prompt_type,
+        "use_examples": use_examples,
+        "process_textbox": process_textbox,
+        "process_span": process_span,
+        "codebook_path": codebook_path,
+        "experiment_directory": experiment_directory,
+        "n_queries": n_queries,
+        "total_inference_time_s": total_inference_time,
+        "avg_inference_time_per_query_s": (
+            avg_inference_time if avg_inference_time is not None
+            else _per_query(total_inference_time, n_queries)
+        ),
+        "total_input_chars": input_chars,
+        "avg_input_chars_per_query": _per_query(input_chars, n_queries),
+        "total_output_chars": output_chars,
+        "avg_output_chars_per_query": _per_query(output_chars, n_queries),
+        "total_energy_kwh": energy_consumed,
+        "avg_energy_kwh_per_query": _per_query(energy_consumed, n_queries),
+        "total_emissions_kg": emissions,
+        "avg_emissions_kg_per_query": _per_query(emissions, n_queries),
+        "cpu_model": cpu_model,
+        "gpu_model": gpu_model,
+    }
+    _append_rows(runs_csv, [run_row], RUN_COLUMNS)
 
-    # Create base header with metadata columns - ADD TIMING AND CHARACTER COUNT COLUMNS
-    base_header = ['Timestamp', 'Label', 'Model ID', 'Quantization Type', 'Temperature', 'Top_P',
-                 'Prompt Type', 'Use Examples', 'Process Textbox', 'Codebook Path', 'Experiment Directory',
-                 'CPU Model', 'GPU Model', 'Emissions (kg CO₂eq)', 'Energy Consumed (kWh)',
-                 'Total Inference Time (s)', 'Avg Inference Time (s)', 
-                 'Total Input Chars', 'Total Output Chars']
-    
-    # Dynamically create header with only relevant metrics for each column
-    metric_header = []
+    # --- metrics table: one tidy row per (run, column, metric) ---
+    score_dicts = {
+        "percentage_agreement": percentage_agreement_scores,
+        "accuracy": accuracy_scores,
+        "precision": precision_scores,
+        "recall": recall_scores,
+        "f1": f1_scores,
+        "cohen_kappa": cohen_kappa_scores,
+        "krippendorff_alpha": krippendorff_alpha_scores,
+        "spearman_corr": spearman_corr_scores,
+        "quadratic_kappa": quadratic_kappa_scores,
+        "norm_levenshtein": norm_levenshtein_scores,
+        "bleu": bleu_scores,
+        "rouge1_f": rouge1_f_scores,
+        "rouge2_f": rouge2_f_scores,
+        "rougeL_f": rougeL_f_scores,
+        "cosine_similarity": cosine_scores,
+        "bertscore_precision": bertscore_p_scores,
+        "bertscore_recall": bertscore_r_scores,
+        "bertscore_f1": bertscore_f1_scores,
+        "token_f1": token_f1_scores,
+        "exact_match_f1": exact_match_f1_scores,
+        "char_iou": char_iou_scores,
+    }
+    metric_rows = []
     for col in columns_to_compare:
-        annotation_type = column_info.get(col, {}).get('type', 'dropdown')
-        
-        # Common metric for all types
-        metric_header.append(f'{col}_percentage_agreement')
-        
-        # Metrics for categorical fields (dropdown, checkbox)
-        if annotation_type in ['dropdown', 'checkbox'] or annotation_type == 'likert':
-            metric_header.extend([
-                f'{col}_accuracy', 
-                f'{col}_precision', 
-                f'{col}_recall', 
-                f'{col}_f1', 
-                f'{col}_cohen_kappa', 
-                f'{col}_krippendorff_alpha'
-            ])
-        
-        # Metrics for likert fields
-        if annotation_type == 'likert':
-            metric_header.extend([
-                f'{col}_spearman_corr', 
-                f'{col}_quadratic_kappa'
-            ])
-        
-        # Metrics for textbox fields
-        if annotation_type == 'textbox':
-            metric_header.extend([
-                f'{col}_norm_levenshtein', 
-                f'{col}_bleu', 
-                f'{col}_rouge1_f', 
-                f'{col}_rouge2_f', 
-                f'{col}_rougeL_f', 
-                f'{col}_cosine_similarity', 
-                f'{col}_bertscore_precision', 
-                f'{col}_bertscore_recall', 
-                f'{col}_bertscore_f1'
-            ])
-    
-    # Combine base and metric headers
-    new_header = base_header + metric_header
+        annotation_type = column_info.get(col, {}).get("type", "dropdown")
+        for metric in _metric_names_for_type(annotation_type):
+            metric_rows.append({
+                "run_id": run_id,
+                "column": col,
+                "annotation_type": annotation_type,
+                "metric": metric,
+                "value": score_dicts[metric].get(col),
+            })
+    _append_rows(metrics_csv, metric_rows, METRIC_COLUMNS)
 
-    if file_exists:
-        try:
-            df = pd.read_csv(output_csv)  # Use pandas for easier data manipulation
-        except pd.errors.EmptyDataError:  # Handle empty file
-            df = pd.DataFrame(columns=[])
 
-        if set(new_header) != set(df.columns):  # Compare sets of headers using pandas
-            # If new columns are added, add them to the existing dataframe
-            missing_cols = set(new_header) - set(df.columns)
-            for col in missing_cols:
-                df[col] = pd.NA
-            
-            # If columns are removed, keep them in the dataframe for backward compatibility
-            # but we'll maintain the right order
-            for col in new_header:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            
-            # Reorder columns to match new_header plus any existing columns
-            all_cols = new_header + [c for c in df.columns if c not in new_header]
-            df = df[all_cols]
-            
-            df.to_csv(output_csv, index=False)  # Write to CSV, overwriting
-
-        # Create new row with base metadata
-        new_row = {
-            'Timestamp': timestamp,
-            'Label': label,
-            'Model ID': model_id,
-            'Quantization Type': quantization_type,
-            'Temperature': temperature,
-            'Top_P': top_p,
-            'Prompt Type': prompt_type,
-            'Use Examples': use_examples,
-            'Process Textbox': process_textbox,
-            'Codebook Path': codebook_path,
-            'Experiment Directory': experiment_directory,
-            'CPU Model': cpu_model,
-            'GPU Model': gpu_model,
-            'Emissions (kg CO₂eq)': emissions,
-            'Energy Consumed (kWh)': energy_consumed,
-            'Total Inference Time (s)': total_inference_time,
-            'Avg Inference Time (s)': avg_inference_time,
-            'Total Input Chars': input_chars,
-            'Total Output Chars': output_chars,
-        }
-        
-        # Add metrics based on column type
-        for col in columns_to_compare:
-            annotation_type = column_info.get(col, {}).get('type', 'dropdown')
-            
-            # Common metric for all types
-            new_row[f'{col}_percentage_agreement'] = percentage_agreement_scores[col]
-            
-            # Metrics for categorical fields (dropdown, checkbox)
-            if annotation_type in ['dropdown', 'checkbox'] or annotation_type == 'likert':
-                new_row[f'{col}_accuracy'] = accuracy_scores[col]
-                new_row[f'{col}_precision'] = precision_scores[col]
-                new_row[f'{col}_recall'] = recall_scores[col]
-                new_row[f'{col}_f1'] = f1_scores[col]
-                new_row[f'{col}_cohen_kappa'] = cohen_kappa_scores[col]
-                new_row[f'{col}_krippendorff_alpha'] = krippendorff_alpha_scores[col]
-            
-            # Metrics for likert fields
-            if annotation_type == 'likert':
-                new_row[f'{col}_spearman_corr'] = spearman_corr_scores[col]
-                new_row[f'{col}_quadratic_kappa'] = quadratic_kappa_scores[col]
-            
-            # Metrics for textbox fields
-            if annotation_type == 'textbox':
-                new_row[f'{col}_norm_levenshtein'] = norm_levenshtein_scores[col]
-                new_row[f'{col}_bleu'] = bleu_scores[col]
-                new_row[f'{col}_rouge1_f'] = rouge1_f_scores[col]
-                new_row[f'{col}_rouge2_f'] = rouge2_f_scores[col]
-                new_row[f'{col}_rougeL_f'] = rougeL_f_scores[col]
-                new_row[f'{col}_cosine_similarity'] = cosine_scores[col]
-                new_row[f'{col}_bertscore_precision'] = bertscore_p_scores[col]
-                new_row[f'{col}_bertscore_recall'] = bertscore_r_scores[col]
-                new_row[f'{col}_bertscore_f1'] = bertscore_f1_scores[col]
-
-        # Add any missing columns with NaN values
-        for col in df.columns:
-            if col not in new_row:
-                new_row[col] = pd.NA
-                
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)  # Append using pandas
-        df.to_csv(output_csv, index=False)  # Write to CSV
-    else:  # File doesn't exist, create it
-        # Create new row with base metadata
-        new_row = {
-            'Timestamp': timestamp,
-            'Label': label,
-            'Model ID': model_id,
-            'Quantization Type': quantization_type,
-            'Temperature': temperature,
-            'Top_P': top_p,
-            'Prompt Type': prompt_type,
-            'Use Examples': use_examples,
-            'Process Textbox': process_textbox,
-            'Codebook Path': codebook_path,
-            'Experiment Directory': experiment_directory,
-            'CPU Model': cpu_model,
-            'GPU Model': gpu_model,
-            'Emissions (kg CO₂eq)': emissions,
-            'Energy Consumed (kWh)': energy_consumed,
-            'Total Inference Time (s)': total_inference_time,
-            'Avg Inference Time (s)': avg_inference_time,
-            'Total Input Chars': input_chars,
-            'Total Output Chars': output_chars,
-        }
-        
-        # Add metrics based on column type
-        for col in columns_to_compare:
-            annotation_type = column_info.get(col, {}).get('type', 'dropdown')
-            
-            # Common metric for all types
-            new_row[f'{col}_percentage_agreement'] = percentage_agreement_scores[col]
-            
-            # Metrics for categorical fields (dropdown, checkbox)
-            if annotation_type in ['dropdown', 'checkbox'] or annotation_type == 'likert':
-                new_row[f'{col}_accuracy'] = accuracy_scores[col]
-                new_row[f'{col}_precision'] = precision_scores[col]
-                new_row[f'{col}_recall'] = recall_scores[col]
-                new_row[f'{col}_f1'] = f1_scores[col]
-                new_row[f'{col}_cohen_kappa'] = cohen_kappa_scores[col]
-                new_row[f'{col}_krippendorff_alpha'] = krippendorff_alpha_scores[col]
-            
-            # Metrics for likert fields
-            if annotation_type == 'likert':
-                new_row[f'{col}_spearman_corr'] = spearman_corr_scores[col]
-                new_row[f'{col}_quadratic_kappa'] = quadratic_kappa_scores[col]
-            
-            # Metrics for textbox fields
-            if annotation_type == 'textbox':
-                new_row[f'{col}_norm_levenshtein'] = norm_levenshtein_scores[col]
-                new_row[f'{col}_bleu'] = bleu_scores[col]
-                new_row[f'{col}_rouge1_f'] = rouge1_f_scores[col]
-                new_row[f'{col}_rouge2_f'] = rouge2_f_scores[col]
-                new_row[f'{col}_rougeL_f'] = rougeL_f_scores[col]
-                new_row[f'{col}_cosine_similarity'] = cosine_scores[col]
-                new_row[f'{col}_bertscore_precision'] = bertscore_p_scores[col]
-                new_row[f'{col}_bertscore_recall'] = bertscore_r_scores[col]
-                new_row[f'{col}_bertscore_f1'] = bertscore_f1_scores[col]
-
-        df = pd.DataFrame([new_row], columns=new_header)
-        df.to_csv(output_csv, index=False)
- 
 def write_classification_reports(output_report_file, columns_to_compare, reports):
     """Write human-readable per-column classification reports to a text file.
 
@@ -1154,6 +1118,9 @@ def _build_metrics_by_column(
     bertscore_p_scores,
     bertscore_r_scores,
     bertscore_f1_scores,
+    token_f1_scores,
+    exact_match_f1_scores,
+    char_iou_scores,
 ):
     """Assemble a compact nested metrics dictionary keyed by column name.
 
@@ -1187,8 +1154,9 @@ def _build_metrics_by_column(
         annotation_type = column_info.get(column, {}).get('type', 'dropdown')
         column_metrics = {
             "annotation_type": annotation_type,
-            "percentage_agreement": percentage_agreement_scores[column],
         }
+        if annotation_type != 'span':
+            column_metrics["percentage_agreement"] = percentage_agreement_scores[column]
 
         if annotation_type in ['dropdown', 'checkbox', 'likert']:
             column_metrics.update({
@@ -1217,6 +1185,13 @@ def _build_metrics_by_column(
                 "bertscore_precision": bertscore_p_scores[column],
                 "bertscore_recall": bertscore_r_scores[column],
                 "bertscore_f1": bertscore_f1_scores[column],
+            })
+
+        if annotation_type == 'span':
+            column_metrics.update({
+                "token_f1": token_f1_scores[column],
+                "exact_match_f1": exact_match_f1_scores[column],
+                "char_iou": char_iou_scores[column],
             })
 
         metrics_by_column[column] = column_metrics
@@ -1262,6 +1237,7 @@ def format_metrics_summary(
     emissions=None,
     cpu_model=None,
     gpu_model=None,
+    n_queries=None,
 ) -> str:
     """Render a compact plain-text summary of performance and efficiency metrics."""
     if not metrics_by_column:
@@ -1287,6 +1263,12 @@ def format_metrics_summary(
                 ("spearman", "spearman_corr"),
                 ("quadratic_kappa", "quadratic_kappa"),
             ]
+        elif annotation_type == "span":
+            metric_order = [
+                ("token_f1", "token_f1"),
+                ("exact_match_f1", "exact_match_f1"),
+                ("char_iou", "char_iou"),
+            ]
         else:
             metric_order = [
                 ("agreement", "percentage_agreement"),
@@ -1306,12 +1288,17 @@ def format_metrics_summary(
     lines.extend([
         "",
         "Efficiency",
+        f"- Queries (model calls): {_format_count_value(n_queries)}",
         f"- Total inference time (s): {_format_metric_value(total_inference_time)}",
-        f"- Average inference time per annotation (s): {_format_metric_value(avg_inference_time)}",
-        f"- Prompt characters: {_format_count_value(input_chars)}",
-        f"- Output characters: {_format_count_value(output_chars)}",
-        f"- Energy consumed (kWh): {_format_metric_value(energy_consumed)}",
-        f"- Emissions (kg CO2eq): {_format_metric_value(emissions)}",
+        f"- Average inference time per query (s): {_format_metric_value(avg_inference_time)}",
+        f"- Prompt characters: {_format_count_value(input_chars)} "
+        f"(avg/query: {_format_metric_value(_per_query(input_chars, n_queries))})",
+        f"- Output characters: {_format_count_value(output_chars)} "
+        f"(avg/query: {_format_metric_value(_per_query(output_chars, n_queries))})",
+        f"- Energy consumed (kWh): {_format_metric_value(energy_consumed)} "
+        f"(avg/query: {_format_metric_value(_per_query(energy_consumed, n_queries))})",
+        f"- Emissions (kg CO2eq): {_format_metric_value(emissions)} "
+        f"(avg/query: {_format_metric_value(_per_query(emissions, n_queries))})",
     ])
 
     if cpu_model:
@@ -1337,6 +1324,7 @@ def run_metrics(
     prompt_type=None,
     use_examples=None,
     process_textbox=False,
+    process_span=False,
     emissions_file=None,
     experiment_directory=None,
     timestamp=None,
@@ -1370,6 +1358,7 @@ def run_metrics(
         :class:`codebook_lab.types.MetricsRunResult` for the completed evaluation.
     """
     process_textbox = str(process_textbox).lower() in ('true', 'yes', '1', 't', 'y')
+    process_span = str(process_span).lower() in ('true', 'yes', '1', 't', 'y')
 
     output_csv = Path(output_csv)
     report_file = Path(report_file)
@@ -1380,9 +1369,9 @@ def run_metrics(
     if emissions_file:
         emissions, energy_consumed, cpu_model, gpu_model = read_emissions_data(emissions_file)
 
-    total_inference_time = avg_inference_time = None
+    total_inference_time = avg_inference_time = n_queries = None
     if timing_file:
-        total_inference_time, avg_inference_time = read_timing_data(timing_file)
+        total_inference_time, avg_inference_time, n_queries = read_timing_data(timing_file)
 
     input_chars = output_chars = None
     if char_counts_file:
@@ -1397,7 +1386,44 @@ def run_metrics(
     all_columns = [f'{col}_gt' for col in columns_to_compare] + [f'{col}_llm' for col in columns_to_compare]
     fill_missing_values(merged_df, all_columns, fill_value='')
 
-    results = evaluate_performance(merged_df, columns_to_compare, column_info, process_textbox)
+    # When span metrics are enabled, source texts are required so we can align
+    # per-row offsets against the original document.
+    texts = None
+    has_span_columns = any(
+        column_info.get(col, {}).get('type') == 'span' for col in columns_to_compare
+    )
+    if process_span and has_span_columns:
+        try:
+            with open(codebook_path, 'r') as fh:
+                codebook = json.load(fh)
+            text_column = codebook.get('text_column')
+            if text_column:
+                gt_df = pd.read_csv(ground_truth_csv)
+                if text_column in gt_df.columns:
+                    texts = gt_df[text_column].fillna('').astype(str).tolist()
+                else:
+                    logger.warning(
+                        "text_column '%s' from codebook is not present in %s; "
+                        "span metrics will be skipped.",
+                        text_column,
+                        ground_truth_csv,
+                    )
+            else:
+                logger.warning(
+                    "Codebook %s does not declare a text_column; span metrics will be skipped.",
+                    codebook_path,
+                )
+        except Exception as exc:
+            logger.warning("Could not load source texts for span metrics: %s", exc)
+
+    results = evaluate_performance(
+        merged_df,
+        columns_to_compare,
+        column_info,
+        process_textbox=process_textbox,
+        process_span=process_span,
+        texts=texts,
+    )
     (
         accuracy_scores, precision_scores, recall_scores, f1_scores,
         cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
@@ -1406,11 +1432,15 @@ def run_metrics(
         rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
         cosine_scores,
         bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+        token_f1_scores, exact_match_f1_scores, char_iou_scores,
         reports
     ) = results
 
-    append_metrics_to_csv(
-        str(output_csv), label, model_id, quantization_type,
+    run_id = uuid.uuid4().hex[:12]
+    output_csv = Path(output_csv)
+    runs_csv = output_csv.with_name(f"{output_csv.stem}_runs.csv")
+    write_metrics(
+        str(output_csv), str(runs_csv), run_id, label, model_id, quantization_type,
         temperature, top_p, codebook_path, columns_to_compare,
         accuracy_scores, precision_scores, recall_scores, f1_scores,
         cohen_kappa_scores, krippendorff_alpha_scores, percentage_agreement_scores,
@@ -1419,14 +1449,16 @@ def run_metrics(
         rouge1_f_scores, rouge2_f_scores, rougeL_f_scores,
         cosine_scores,
         bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
+        token_f1_scores, exact_match_f1_scores, char_iou_scores,
         column_info,
         prompt_type=prompt_type, use_examples=use_examples,
         process_textbox=str(process_textbox).lower(),
+        process_span=str(process_span).lower(),
         emissions=emissions, energy_consumed=energy_consumed,
         cpu_model=cpu_model, gpu_model=gpu_model,
         total_inference_time=total_inference_time, avg_inference_time=avg_inference_time,
-        input_chars=input_chars, output_chars=output_chars,
-        timestamp=timestamp, experiment_directory=experiment_directory
+        input_chars=input_chars, output_chars=output_chars, n_queries=n_queries,
+        timestamp=timestamp, experiment_directory=experiment_directory,
     )
 
     write_classification_reports(str(report_file), columns_to_compare, reports)
@@ -1451,6 +1483,9 @@ def run_metrics(
         bertscore_p_scores,
         bertscore_r_scores,
         bertscore_f1_scores,
+        token_f1_scores,
+        exact_match_f1_scores,
+        char_iou_scores,
     )
 
     logger.info("Results successfully written to %s and %s", output_csv, report_file)
@@ -1478,5 +1513,9 @@ def run_metrics(
             emissions=emissions,
             cpu_model=cpu_model,
             gpu_model=gpu_model,
+            n_queries=n_queries,
         ),
+        run_id=run_id,
+        runs_csv=runs_csv,
+        n_queries=n_queries,
     )

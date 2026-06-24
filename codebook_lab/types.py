@@ -52,6 +52,9 @@ class MetricsRunResult:
         cpu_model: CPU metadata recorded by CodeCarbon, if available.
         gpu_model: GPU metadata recorded by CodeCarbon, if available.
         summary_text: Plain-text summary of the main evaluation metrics.
+        run_id: Identifier linking this run's rows across the runs and metrics tables.
+        runs_csv: Filesystem path to the per-run efficiency/config table, if written.
+        n_queries: Number of model inference calls in the annotation run, if available.
     """
 
     output_csv: Path
@@ -68,6 +71,9 @@ class MetricsRunResult:
     cpu_model: str | None
     gpu_model: str | None
     summary_text: str
+    run_id: str | None = None
+    runs_csv: Path | None = None
+    n_queries: int | None = None
 
 
 @dataclass
@@ -122,6 +128,7 @@ class ExperimentSpec:
         temperature: Optional sampling temperature as ``None``, string, or float.
         top_p: Optional nucleus-sampling value as ``None``, string, or float.
         process_textbox: Whether textbox annotations should be generated and scored.
+        process_span: Whether span annotations should be generated and scored.
         country_iso_code: Three-letter ISO 3166-1 alpha-3 code for CodeCarbon.
     """
 
@@ -132,6 +139,7 @@ class ExperimentSpec:
     temperature: float | None = None
     top_p: float | None = None
     process_textbox: bool = False
+    process_span: bool = False
     country_iso_code: str = "USA"
 
 
