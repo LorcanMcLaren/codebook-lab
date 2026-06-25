@@ -151,6 +151,7 @@ results = run_experiment_grid(
         "temperatures": ["None", "0.2"],
         "top_ps": ["None"],
         "process_textboxes": ["true"],
+        "process_spans": ["false"],
     },
     output_root="outputs",
 )
@@ -219,6 +220,7 @@ Most multi-run setup happens through the parameter grid dictionary you pass into
 - `temperatures`: sampling temperature values (leave empty for model default)
 - `top_ps`: nucleus sampling values (leave empty for model default)
 - `process_textboxes`: whether textbox-style annotations should be generated and scored
+- `process_spans`: whether span annotations should be generated and scored
 
 When `process_textboxes` is enabled, install the optional textbox extras first if you want the full textbox metric suite:
 

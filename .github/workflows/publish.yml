@@ -12,6 +12,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -25,3 +27,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" --generate-notes dist/*
+      # Keep CITATION.cff in sync with the released tag and push the update back
+      # to the default branch. Runs last so a push failure (e.g. branch
+      # protection) cannot block the PyPI publish.
+      - name: Sync CITATION.cff to release version
+        run: |
+          sed -i -E "s|^version: .*|version: \"${GITHUB_REF_NAME}\"|" CITATION.cff
+          sed -i -E "s|^date-released: .*|date-released: $(date -u +%F)|" CITATION.cff
+          if ! git diff --quiet CITATION.cff; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add CITATION.cff
+            git commit -m "Sync CITATION.cff to ${GITHUB_REF_NAME}"
+            git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          fi
