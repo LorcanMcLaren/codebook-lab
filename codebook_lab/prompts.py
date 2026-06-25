@@ -88,7 +88,7 @@ def register_prompt_wrapper(name: str, wrapper: PromptWrapper, overwrite: bool =
 
     Args:
         name: String key users will pass as ``prompt_type`` such as ``"concise"``.
-        wrapper: Callable accepting a :class:`PromptContext` and returning a full prompt string.
+        wrapper: Callable accepting a `PromptContext` and returning a full prompt string.
         overwrite: Set to ``True`` to replace an existing wrapper with the same name.
     """
     if not name:

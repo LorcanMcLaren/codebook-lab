@@ -224,7 +224,7 @@ def generate_response(
     """Run one prompt through the model and update timing/count statistics.
 
     Args:
-        chain: ``ChatOllama`` instance returned by :func:`setup_model`.
+        chain: ``ChatOllama`` instance returned by `setup_model`.
         prompt: Fully rendered prompt string.
         char_counts: Mutable dict with ``input_chars`` and ``output_chars`` integers.
         timing_data: Mutable dict with inference timing counters.
@@ -651,7 +651,7 @@ def _generate_and_extract(
 ):
     """Generate and extract one annotation, retrying invalid responses.
 
-    A response is "invalid" when :func:`extract_json_response` returns ``None``
+    A response is "invalid" when `extract_json_response` returns ``None``
     (unparseable, empty, or out-of-codebook). On each retry the request is
     re-issued according to ``retry_strategy``:
 
@@ -713,7 +713,7 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
     """Annotate one text row across all sections in a codebook.
 
     Args:
-        chain: Runnable returned by :func:`setup_model`.
+        chain: Runnable returned by `setup_model`.
         text: Raw source text to annotate.
         codebook: Parsed codebook dictionary.
         prompt_type: Registered prompt wrapper name or callable wrapper.
@@ -836,7 +836,7 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
         csv_path: Path to the input CSV file.
         output_path: Path where the annotated CSV should be written.
         codebook: Parsed codebook dictionary.
-        chain: Runnable returned by :func:`setup_model`.
+        chain: Runnable returned by `setup_model`.
         prompt_type: Registered prompt wrapper name or callable wrapper.
         use_examples: Whether codebook examples should be included in prompts.
         process_textbox: Whether textbox annotations should be generated.
@@ -952,7 +952,7 @@ def run_annotation(
             server automatically when needed.
 
     Returns:
-        :class:`codebook_lab.types.AnnotationRunResult` describing the completed run.
+        `codebook_lab.types.AnnotationRunResult` describing the completed run.
     """
     country_iso_code = normalize_country_iso_code(country_iso_code)
     temperature = _normalize_optional_parameter(temperature)

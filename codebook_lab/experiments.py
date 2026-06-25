@@ -31,7 +31,7 @@ def _coerce_sweep(values, default):
 
 
 def expand_param_grid(param_grid: dict) -> list[ExperimentSpec]:
-    """Expand a parameter grid into concrete :class:`ExperimentSpec` runs.
+    """Expand a parameter grid into concrete `ExperimentSpec` runs.
 
     Args:
         param_grid: In-memory grid dictionary describing the Cartesian-product
@@ -195,7 +195,7 @@ def run_experiment(
         quantization_type: Optional metadata field written to the metrics CSV.
 
     Returns:
-        :class:`ExperimentRunResult` containing both annotation and metrics results.
+        `ExperimentRunResult` containing both annotation and metrics results.
     """
     from .annotate import run_annotation
     from .metrics import run_metrics
@@ -296,7 +296,7 @@ def run_experiment_grid(
     """Run a whole parameter sweep from a grid or a prebuilt spec list.
 
     Args:
-        specs: Optional pre-expanded list of :class:`ExperimentSpec` objects.
+        specs: Optional pre-expanded list of `ExperimentSpec` objects.
         param_grid: Optional in-memory parameter grid dictionary.
         task_root: Optional directory containing user-defined task folders.
         output_root: Root directory for per-run outputs.
@@ -307,7 +307,7 @@ def run_experiment_grid(
             server before each run when needed. Defaults to ``True``.
 
     Returns:
-        List of :class:`ExperimentRunResult` objects, one per completed run.
+        List of `ExperimentRunResult` objects, one per completed run.
     """
     if specs is None:
         if param_grid is None:

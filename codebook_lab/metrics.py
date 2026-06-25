@@ -433,9 +433,9 @@ def evaluate_performance(
     """Compute evaluation metrics for each requested annotation column.
 
     Args:
-        merged_df: DataFrame returned by :func:`load_data`.
+        merged_df: DataFrame returned by `load_data`.
         columns_to_compare: List of annotation columns to evaluate.
-        column_info: Metadata mapping produced by :func:`extract_column_info_from_codebook`.
+        column_info: Metadata mapping produced by `extract_column_info_from_codebook`.
         process_textbox: Whether textbox similarity metrics should be calculated.
         process_span: Whether span metrics should be calculated.
         texts: Optional iterable of source texts (one per row in ``merged_df``)
@@ -1355,7 +1355,7 @@ def run_metrics(
         char_counts_file: Optional path to ``char_counts.json``.
 
     Returns:
-        :class:`codebook_lab.types.MetricsRunResult` for the completed evaluation.
+        `codebook_lab.types.MetricsRunResult` for the completed evaluation.
     """
     process_textbox = str(process_textbox).lower() in ('true', 'yes', '1', 't', 'y')
     process_span = str(process_span).lower() in ('true', 'yes', '1', 't', 'y')
