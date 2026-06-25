@@ -935,7 +935,7 @@ _SPAN_METRICS = ("token_f1", "exact_match_f1", "char_iou")
 
 RUN_COLUMNS = [
     "run_id", "timestamp", "label", "model_id", "quantization_type", "temperature", "top_p",
-    "prompt_type", "use_examples", "process_textbox", "process_span",
+    "prompt_type", "use_examples", "chat_mode", "reasoning", "process_textbox", "process_span",
     "codebook_path", "experiment_directory", "n_queries",
     "total_inference_time_s", "avg_inference_time_per_query_s",
     "total_input_chars", "avg_input_chars_per_query",
@@ -991,7 +991,8 @@ def write_metrics(metrics_csv, runs_csv, run_id, label, model_id, quantization_t
                   bertscore_p_scores, bertscore_r_scores, bertscore_f1_scores,
                   token_f1_scores, exact_match_f1_scores, char_iou_scores,
                   column_info,
-                  prompt_type=None, use_examples=None, process_textbox=None, process_span=None,
+                  prompt_type=None, use_examples=None, chat_mode=None, reasoning=None,
+                  process_textbox=None, process_span=None,
                   emissions=None, energy_consumed=None, cpu_model=None, gpu_model=None,
                   total_inference_time=None, avg_inference_time=None,
                   input_chars=None, output_chars=None, n_queries=None,
@@ -1021,6 +1022,8 @@ def write_metrics(metrics_csv, runs_csv, run_id, label, model_id, quantization_t
         "top_p": top_p,
         "prompt_type": prompt_type,
         "use_examples": use_examples,
+        "chat_mode": chat_mode,
+        "reasoning": reasoning,
         "process_textbox": process_textbox,
         "process_span": process_span,
         "codebook_path": codebook_path,
@@ -1323,6 +1326,8 @@ def run_metrics(
     top_p=None,
     prompt_type=None,
     use_examples=None,
+    chat_mode=None,
+    reasoning=None,
     process_textbox=False,
     process_span=False,
     emissions_file=None,
@@ -1330,6 +1335,7 @@ def run_metrics(
     timestamp=None,
     timing_file=None,
     char_counts_file=None,
+    run_id=None,
 ):
     """Evaluate one model-output CSV against ground truth and persist the results.
 
@@ -1347,6 +1353,8 @@ def run_metrics(
         top_p: Optional top-p metadata value.
         prompt_type: Optional prompt wrapper name stored as metadata.
         use_examples: Optional boolean-like metadata flag.
+        chat_mode: Optional chat-history policy stored as metadata.
+        reasoning: Optional Ollama reasoning mode stored as metadata.
         process_textbox: Whether textbox metrics should be computed.
         emissions_file: Optional path to ``emissions.csv``.
         experiment_directory: Optional path to the per-run output directory.
@@ -1436,7 +1444,7 @@ def run_metrics(
         reports
     ) = results
 
-    run_id = uuid.uuid4().hex[:12]
+    run_id = run_id or uuid.uuid4().hex[:12]
     output_csv = Path(output_csv)
     runs_csv = output_csv.with_name(f"{output_csv.stem}_runs.csv")
     write_metrics(
@@ -1452,6 +1460,7 @@ def run_metrics(
         token_f1_scores, exact_match_f1_scores, char_iou_scores,
         column_info,
         prompt_type=prompt_type, use_examples=use_examples,
+        chat_mode=chat_mode, reasoning=reasoning,
         process_textbox=str(process_textbox).lower(),
         process_span=str(process_span).lower(),
         emissions=emissions, energy_consumed=energy_consumed,

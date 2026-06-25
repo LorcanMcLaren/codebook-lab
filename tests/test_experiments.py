@@ -5,7 +5,10 @@ import pytest
 from codebook_lab.experiments import (
     _coerce_bool,
     _normalize_optional_float,
+    build_experiment_paths,
     expand_param_grid,
+    normalize_chat_mode,
+    normalize_reasoning,
 )
 from codebook_lab.types import ExperimentSpec
 
@@ -55,7 +58,9 @@ class TestExpandParamGrid:
         assert len(specs) == 1
         assert specs[0].task == "policy-sentiment"
         assert specs[0].model == "gemma3:270m"
-        assert specs[0].use_examples is False
+        assert specs[0].use_examples is True
+        assert specs[0].temperature == 0.0
+        assert specs[0].chat_mode == "per_text"
 
     def test_cartesian_product(self):
         specs = expand_param_grid({
@@ -87,3 +92,47 @@ class TestExpandParamGrid:
     def test_returns_experiment_specs(self):
         specs = expand_param_grid({"tasks": ["t"], "models": ["m"]})
         assert all(isinstance(s, ExperimentSpec) for s in specs)
+
+    def test_chat_mode_and_reasoning_coercion(self):
+        specs = expand_param_grid({
+            "tasks": ["t"],
+            "models": ["m"],
+            "chat_modes": ["per-query", "continuous"],
+            "reasoning": ["true", "false"],
+        })
+        assert len(specs) == 4
+        assert {spec.chat_mode for spec in specs} == {"per_query", "continuous"}
+        assert {spec.reasoning for spec in specs} == {True, False}
+
+
+def test_normalize_chat_mode_aliases_and_rejects_unknown():
+    assert normalize_chat_mode("fresh") == "per_query"
+    assert normalize_chat_mode("row") == "per_text"
+    assert normalize_chat_mode("single_chat") == "continuous"
+    with pytest.raises(ValueError):
+        normalize_chat_mode("foreverish")
+
+
+def test_normalize_reasoning_values():
+    assert normalize_reasoning("true") is True
+    assert normalize_reasoning("off") is False
+    assert normalize_reasoning("None") is None
+    assert normalize_reasoning("low") == "low"
+
+
+def test_build_experiment_paths_uses_run_id_directory(tmp_path):
+    paths = build_experiment_paths(
+        task="task",
+        model="model:1",
+        use_examples=True,
+        prompt_type="standard",
+        temperature=0.0,
+        top_p=None,
+        process_textbox=False,
+        output_root=tmp_path,
+        timestamp="2026-06-25_10-00-00",
+        run_id="run_test",
+    )
+    assert paths["run_id"] == "run_test"
+    assert paths["experiment_directory"] == tmp_path / "task" / "run_test"
+    assert paths["output_csv"] == tmp_path / "task" / "run_test" / "output.csv"

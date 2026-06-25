@@ -4,8 +4,13 @@ import pytest
 
 from codebook_lab.annotate import (
     _RETRY_REMINDER,
+    _extract_reasoning_content,
+    AnnotationResponse,
+    ChatSession,
+    apply_classification_to_csv,
     classify_text,
     extract_json_response,
+    generate_response,
     normalize_retry_strategy,
 )
 
@@ -138,3 +143,87 @@ def test_temperature_strategy_uses_retry_chain_on_retry(monkeypatch):
     )
     assert chains[0] is base_chain
     assert chains[1] is retry_chain
+
+
+def test_apply_classification_chat_modes_create_expected_sessions(tmp_path, monkeypatch):
+    csv_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    csv_path.write_text("id,text\n1,first\n2,second\n")
+    sessions_by_mode = {}
+
+    def fake_classify_text(*args, **kwargs):
+        sessions_by_mode.setdefault(kwargs["chat_mode"], []).append(kwargs["chat_session"])
+        char_counts = args[5]
+        timing_data = args[6]
+        return ({COL: "Yes"}, char_counts, timing_data)
+
+    monkeypatch.setattr("codebook_lab.annotate.classify_text", fake_classify_text)
+
+    for mode in ("per_query", "per_text", "continuous"):
+        apply_classification_to_csv(
+            csv_path,
+            output_path,
+            _single_dropdown_codebook(),
+            chain=object(),
+            chat_mode=mode,
+        )
+
+    assert sessions_by_mode["per_query"] == [None, None]
+    assert all(session is not None for session in sessions_by_mode["per_text"])
+    assert sessions_by_mode["per_text"][0] is not sessions_by_mode["per_text"][1]
+    assert sessions_by_mode["continuous"][0] is sessions_by_mode["continuous"][1]
+
+
+def test_generate_response_captures_reasoning_trace_with_chat_session():
+    class FakeRaw:
+        content = '{"response": "Yes"}'
+        additional_kwargs = {"reasoning_content": "because the text matches"}
+
+    class FakeStructuredModel:
+        def invoke(self, messages):
+            self.messages = messages
+            return {
+                "parsed": AnnotationResponse(response="Yes"),
+                "raw": FakeRaw(),
+            }
+
+    class FakeChain:
+        def __init__(self):
+            self.structured_model = FakeStructuredModel()
+
+        def with_structured_output(self, *args, **kwargs):
+            return self.structured_model
+
+    chain = FakeChain()
+    session = ChatSession()
+    traces = []
+    char_counts = {"input_chars": 0, "output_chars": 0}
+    timing_data = {"total_inference_time": 0, "inference_count": 0}
+
+    response = generate_response(
+        chain,
+        "Prompt",
+        char_counts,
+        timing_data,
+        row_num=1,
+        annotation_name=COL,
+        annotation_type="dropdown",
+        chat_session=session,
+        reasoning_traces=traces,
+        attempt=2,
+        chat_mode="per_text",
+    )
+
+    assert response == '{"response":"Yes"}'
+    assert len(session.messages) == 2
+    assert traces[0]["reasoning"] == "because the text matches"
+    assert traces[0]["attempt"] == 2
+    assert traces[0]["chat_mode"] == "per_text"
+
+
+def test_extract_reasoning_content_falls_back_to_think_tags():
+    class Raw:
+        content = "<think>step one\nstep two</think>{\"response\": \"Yes\"}"
+        additional_kwargs = {}
+
+    assert _extract_reasoning_content(Raw()) == "step one\nstep two"

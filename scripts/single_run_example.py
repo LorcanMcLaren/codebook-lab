@@ -28,10 +28,8 @@ def main() -> None:
         ExperimentSpec(
             task=TASK,
             model=MODEL,
-            use_examples=False,
-            prompt_type="standard",
-            temperature=None,
-            top_p=None,
+            chat_mode="per_text",
+            reasoning=None,
             process_textbox=True,
             country_iso_code=COUNTRY_ISO_CODE,
         ),

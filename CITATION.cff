@@ -13,9 +13,9 @@ authors:
   - family-names: "McLaren"
     given-names: "Lorcan"
     orcid: "https://orcid.org/0009-0002-3828-3395"
-version: "v1.3.0"
+version: "v1.4.0"
 doi: "10.5281/zenodo.19185921"
-date-released: 2026-06-24
+date-released: 2026-06-25
 repository-code: "https://github.com/LorcanMcLaren/codebook-lab"
 url: "https://github.com/LorcanMcLaren/codebook-lab"
 license: "AGPL-3.0-only"

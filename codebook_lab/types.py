@@ -4,6 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .defaults import (
+    DEFAULT_CHAT_MODE,
+    DEFAULT_COUNTRY_ISO_CODE,
+    DEFAULT_PROMPT_TYPE,
+    DEFAULT_REASONING,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    DEFAULT_USE_EXAMPLES,
+)
+
 if TYPE_CHECKING:
     import pandas as pd
 
@@ -21,6 +31,7 @@ class AnnotationRunResult:
         timing_data: Inference timing summary, including total and average seconds.
         emissions: CodeCarbon estimate in kilograms of CO2 equivalent, or ``None``.
         dataframe: Pandas DataFrame containing the annotated rows written to disk.
+        reasoning_traces: Per-query reasoning records captured from models that expose them.
     """
 
     model: str
@@ -31,6 +42,7 @@ class AnnotationRunResult:
     timing_data: dict[str, Any]
     emissions: float | None
     dataframe: pd.DataFrame
+    reasoning_traces: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -127,6 +139,10 @@ class ExperimentSpec:
         prompt_type: Registered prompt wrapper name, for example ``"standard"``.
         temperature: Optional sampling temperature as ``None``, string, or float.
         top_p: Optional nucleus-sampling value as ``None``, string, or float.
+        chat_mode: How annotation calls share chat history. Supported values are
+            ``"per_text"``, ``"per_query"``, and ``"continuous"``.
+        reasoning: Ollama reasoning mode passed to ``ChatOllama``. ``None`` keeps
+            the model default, ``True`` enables it, and ``False`` disables it.
         process_textbox: Whether textbox annotations should be generated and scored.
         process_span: Whether span annotations should be generated and scored.
         country_iso_code: Three-letter ISO 3166-1 alpha-3 code for CodeCarbon.
@@ -134,13 +150,15 @@ class ExperimentSpec:
 
     task: str
     model: str
-    use_examples: bool = False
-    prompt_type: str = "standard"
-    temperature: float | None = None
-    top_p: float | None = None
+    use_examples: bool = DEFAULT_USE_EXAMPLES
+    prompt_type: str = DEFAULT_PROMPT_TYPE
+    temperature: float | None = DEFAULT_TEMPERATURE
+    top_p: float | None = DEFAULT_TOP_P
+    chat_mode: str = DEFAULT_CHAT_MODE
+    reasoning: bool | str | None = DEFAULT_REASONING
     process_textbox: bool = False
     process_span: bool = False
-    country_iso_code: str = "USA"
+    country_iso_code: str = DEFAULT_COUNTRY_ISO_CODE
 
 
 @dataclass
@@ -152,6 +170,7 @@ class ExperimentRunResult:
         experiment_directory: Directory containing this run's outputs.
         model_id: Stable model/config identifier used in the metrics log.
         label: Task label written to the metrics CSV.
+        run_id: Identifier linking this run's output directory and aggregate metrics.
         annotation: Result object returned by ``run_annotation``.
         metrics: Result object returned by ``run_metrics``.
     """
@@ -162,3 +181,4 @@ class ExperimentRunResult:
     label: str
     annotation: AnnotationRunResult
     metrics: MetricsRunResult
+    run_id: str | None = None

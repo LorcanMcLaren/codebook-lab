@@ -120,10 +120,8 @@ result = run_experiment(
     ExperimentSpec(
         task="policy-sentiment",
         model="gemma3:270m",
-        use_examples=False,
-        prompt_type="standard",
-        temperature=None,
-        top_p=None,
+        chat_mode="per_text",
+        reasoning=None,
         process_textbox=True,
         country_iso_code="IRL",
     ),
@@ -146,10 +144,12 @@ results = run_experiment_grid(
         "country_iso_code": "IRL",
         "tasks": ["policy-sentiment"],
         "models": ["gemma3:270m", "llama3.2:3b"],
-        "use_examples": ["false", "true"],
+        "use_examples": ["true"],
         "prompt_types": ["standard", "persona"],
-        "temperatures": ["None", "0.2"],
+        "temperatures": ["0", "0.2"],
         "top_ps": ["None"],
+        "chat_modes": ["per_text", "per_query"],
+        "reasoning": ["None", "false"],
         "process_textboxes": ["true"],
         "process_spans": ["false"],
     },
@@ -186,7 +186,7 @@ result = run_experiment(
 
 ### 5. Inspect the outputs
 
-Each run creates a timestamped experiment directory under `outputs/<task>/` containing:
+Each run creates a run-ID experiment directory under `outputs/<task>/<run_id>/` containing:
 
 - `output.csv`: row-level model annotations
 - `config.json`: the run configuration
@@ -194,8 +194,9 @@ Each run creates a timestamped experiment directory under `outputs/<task>/` cont
 - `emissions.csv`: CodeCarbon output
 - `timing_data.json`: inference timing summary
 - `char_counts.json`: prompt and response character counts
+- `reasoning_traces.jsonl`: per-query reasoning content when the model returns it
 
-Aggregate metrics are written to `outputs/metrics/<task>_metrics_log.csv`.
+Aggregate metrics are written to `outputs/metrics/<task>_metrics_log.csv`, with run-level metadata in `outputs/metrics/<task>_metrics_log_runs.csv`. Use `run_id` to connect a run folder, its `config.json`, and its rows in the aggregate metrics tables.
 
 That metrics log stores both annotation-quality metrics and run metadata. Depending on the annotation type, it can include:
 
@@ -203,7 +204,7 @@ That metrics log stores both annotation-quality metrics and run metadata. Depend
 - inter-rater style agreement metrics such as Cohen's kappa and Krippendorff's alpha
 - ordinal metrics for Likert labels such as Spearman correlation and quadratic weighted kappa
 - textbox metrics such as normalized Levenshtein similarity, BLEU, ROUGE, cosine similarity, and BERTScore
-- resource and run metadata such as CPU model, GPU model, total inference time, average inference time, total input characters, total output characters, energy consumed in kWh, and emissions in kg CO2eq
+- run metadata such as prompt type, example use, chat mode, reasoning mode, CPU model, GPU model, total inference time, average inference time, total input characters, total output characters, energy consumed in kWh, and emissions in kg CO2eq
 
 This makes it easy to compare not just which model is most accurate, but also which setup is fastest, cheapest to run, and most energy intensive.
 
@@ -217,8 +218,10 @@ Most multi-run setup happens through the parameter grid dictionary you pass into
 - `models`: which Ollama models to evaluate (e.g. `gemma3:270m`, `llama3.2:3b`, `qwen3.5:latest`)
 - `use_examples`: whether to include worked examples from the codebook in the LLM prompt (zero-shot vs. few-shot)
 - `prompt_types`: which prompt wrapper to use (`standard`, `persona`, or `CoT`)
-- `temperatures`: sampling temperature values (leave empty for model default)
+- `temperatures`: sampling temperature values (`0` is the default for classification)
 - `top_ps`: nucleus sampling values (leave empty for model default)
+- `chat_modes`: whether model calls use a fresh chat per query (`per_query`), one chat per text row (`per_text`, the default), or one continuous chat for the whole run (`continuous`)
+- `reasoning`: Ollama reasoning mode (`true`, `false`, or `None` for the model default)
 - `process_textboxes`: whether textbox-style annotations should be generated and scored
 - `process_spans`: whether span annotations should be generated and scored
 
@@ -304,7 +307,7 @@ Citation metadata is also available in the project's [`CITATION.cff`](https://gi
 
 APSR style:
 
-McLaren, Lorcan. 2026. *CodeBook Lab* (Version v1.0.0) [Computer software]. Zenodo. [https://doi.org/10.5281/zenodo.19185921](https://doi.org/10.5281/zenodo.19185921).
+McLaren, Lorcan. 2026. *CodeBook Lab* (Version v1.4.0) [Computer software]. Zenodo. [https://doi.org/10.5281/zenodo.19185921](https://doi.org/10.5281/zenodo.19185921).
 
 BibTeX:
 
@@ -313,7 +316,7 @@ BibTeX:
   author = {McLaren, Lorcan},
   title = {CodeBook Lab},
   year = {2026},
-  version = {v1.0.0},
+  version = {v1.4.0},
   doi = {10.5281/zenodo.19185921},
   url = {https://doi.org/10.5281/zenodo.19185921}
 }

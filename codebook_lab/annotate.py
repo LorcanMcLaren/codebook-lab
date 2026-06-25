@@ -8,6 +8,7 @@ from typing import Any, Optional
 import pandas as pd
 import regex
 from codecarbon import OfflineEmissionsTracker
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama.chat_models import ChatOllama
 from pydantic import BaseModel
@@ -17,6 +18,15 @@ from .conditions import (
     get_annotation_entries,
     is_annotation_applicable,
     normalize_annotation_response_value,
+)
+from .defaults import (
+    DEFAULT_CHAT_MODE,
+    DEFAULT_REASONING,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    DEFAULT_USE_EXAMPLES,
+    normalize_chat_mode,
+    normalize_reasoning,
 )
 from .ollama import ensure_ollama_available
 from .span_value import parse_span_value, serialize_span_value
@@ -57,6 +67,16 @@ from .prompts import PromptContext, get_prompt_type_name, render_prompt
 from .types import AnnotationRunResult
 
 logger = logging.getLogger(__name__)
+
+class ChatSession:
+    """Minimal retained chat history for an annotation run or text row."""
+
+    def __init__(self) -> None:
+        self.messages = []
+
+    def append(self, prompt: str, response: str) -> None:
+        self.messages.append(HumanMessage(content=prompt))
+        self.messages.append(AIMessage(content=response))
 
 
 class _AnnotationProgressBar:
@@ -191,13 +211,14 @@ def normalize_country_iso_code(country_iso_code):
     return normalized
 
 
-def setup_model(model_name, temperature=None, top_p=None):
+def setup_model(model_name, temperature=None, top_p=None, reasoning=None):
     """Create the LangChain-Ollama pipeline used for annotation.
 
     Args:
         model_name: Ollama model identifier such as ``"gemma3:270m"``.
         temperature: Optional sampling temperature.
         top_p: Optional nucleus-sampling value.
+        reasoning: Optional Ollama reasoning mode.
 
     Returns:
         ``ChatOllama`` instance.  The caller builds structured-output chains
@@ -208,9 +229,29 @@ def setup_model(model_name, temperature=None, top_p=None):
         model_kwargs['temperature'] = float(temperature)
     if top_p is not None:
         model_kwargs['top_p'] = float(top_p)
+    if reasoning is not None:
+        model_kwargs['reasoning'] = reasoning
 
     llm = ChatOllama(model=model_name, **model_kwargs)
     return llm
+
+
+def _extract_reasoning_content(raw_message) -> str | None:
+    """Return reasoning content from an Ollama raw message when available."""
+    if raw_message is None:
+        return None
+
+    additional_kwargs = getattr(raw_message, "additional_kwargs", {}) or {}
+    reasoning = additional_kwargs.get("reasoning_content")
+    if reasoning:
+        return str(reasoning)
+
+    raw_content = str(getattr(raw_message, "content", "") or "")
+    match = regex.search(r"<think>(.*?)</think>", raw_content, flags=regex.DOTALL | regex.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
 
 def generate_response(
     chain,
@@ -220,6 +261,10 @@ def generate_response(
     row_num=None,
     annotation_name=None,
     annotation_type=None,
+    chat_session=None,
+    reasoning_traces=None,
+    attempt=1,
+    chat_mode=None,
 ):
     """Run one prompt through the model and update timing/count statistics.
 
@@ -233,6 +278,10 @@ def generate_response(
         annotation_type: Annotation type string used to pick the structured
             output schema (``"span"`` uses ``SpanAnnotationResponse``; everything
             else uses ``AnnotationResponse``).
+        chat_session: Optional ``ChatSession`` retaining prior prompts/responses.
+        reasoning_traces: Optional list that receives per-query reasoning records.
+        attempt: 1-based attempt number for retry trace metadata.
+        chat_mode: Normalized chat-history policy for trace metadata.
 
     Returns:
         Raw model response string, or ``""`` if inference failed.
@@ -245,15 +294,16 @@ def generate_response(
         if row_num and annotation_name:
             logger.info("[Row %s] Sending request for: %s...", row_num, annotation_name)
 
-        structured_chain = (
-            _PROMPT_TEMPLATE
-            | chain.with_structured_output(
-                response_schema, method="json_schema", include_raw=True
-            )
+        structured_model = chain.with_structured_output(
+            response_schema, method="json_schema", include_raw=True
         )
 
         start_time = time.time()
-        result = structured_chain.invoke({"question": prompt})
+        if chat_session is None:
+            result = (_PROMPT_TEMPLATE | structured_model).invoke({"question": prompt})
+        else:
+            messages = [*chat_session.messages, HumanMessage(content=prompt)]
+            result = structured_model.invoke(messages)
         end_time = time.time()
         inference_time = end_time - start_time
         timing_data['total_inference_time'] += inference_time
@@ -267,6 +317,28 @@ def generate_response(
             logger.debug("Structured parsing failed, using raw response for %s", annotation_name)
 
         char_counts['output_chars'] += len(response)
+
+        raw = result.get("raw")
+        raw_content = ""
+        if raw is not None:
+            raw_content = str(getattr(raw, "content", "") or "")
+        reasoning = _extract_reasoning_content(raw)
+
+        if chat_session is not None:
+            chat_session.append(prompt, raw_content or response)
+
+        if reasoning_traces is not None and reasoning is not None:
+            reasoning_traces.append({
+                "row_num": row_num,
+                "annotation_name": annotation_name,
+                "annotation_type": annotation_type,
+                "attempt": int(attempt),
+                "chat_mode": chat_mode,
+                "prompt_chars": len(prompt),
+                "response_chars": len(response),
+                "inference_time_s": inference_time,
+                "reasoning": reasoning,
+            })
 
         if row_num and annotation_name:
             logger.info("[Row %s] %s done (%.1fs)", row_num, annotation_name, inference_time)
@@ -648,6 +720,9 @@ def _generate_and_extract(
     text,
     retries,
     retry_strategy,
+    chat_session=None,
+    reasoning_traces=None,
+    chat_mode=None,
 ):
     """Generate and extract one annotation, retrying invalid responses.
 
@@ -681,6 +756,10 @@ def _generate_and_extract(
             row_num=row_num,
             annotation_name=annotation_full_name,
             annotation_type=annotation_type,
+            chat_session=chat_session,
+            reasoning_traces=reasoning_traces,
+            attempt=attempt + 1,
+            chat_mode=chat_mode,
         )
         value = extract_json_response(
             response_text,
@@ -709,7 +788,8 @@ def _generate_and_extract(
 def classify_text(chain, text, codebook, prompt_type="standard", use_examples=False,
                  char_counts=None, timing_data=None, process_textbox=False, row_num=None,
                  progress_bar=None, total_rows=None, process_span=False,
-                 retries=1, retry_strategy="identical", retry_chain=None):
+                 retries=1, retry_strategy="identical", retry_chain=None,
+                 chat_session=None, reasoning_traces=None, chat_mode=None):
     """Annotate one text row across all sections in a codebook.
 
     Args:
@@ -724,6 +804,9 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
         row_num: Optional 1-based row number for progress logging.
         progress_bar: Optional progress-bar helper updated after each annotation.
         total_rows: Optional total row count for progress rendering.
+        chat_session: Optional retained chat history for this text or run.
+        reasoning_traces: Optional list that receives per-query reasoning records.
+        chat_mode: Normalized chat-history policy for trace metadata.
 
     Returns:
         Tuple of ``(responses, char_counts, timing_data)``.
@@ -810,6 +893,9 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
             text=text,
             retries=retries,
             retry_strategy=retry_strategy,
+            chat_session=chat_session,
+            reasoning_traces=reasoning_traces,
+            chat_mode=chat_mode,
         )
 
         if annotation_type == "span":
@@ -829,7 +915,8 @@ def classify_text(chain, text, codebook, prompt_type="standard", use_examples=Fa
 
 def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_type="standard",
                               use_examples=False, process_textbox=False, process_span=False,
-                              retries=1, retry_strategy="identical", retry_chain=None):
+                              retries=1, retry_strategy="identical", retry_chain=None,
+                              chat_mode=DEFAULT_CHAT_MODE, reasoning_traces=None):
     """Run annotation over every row in an input CSV and write incremental results.
 
     Args:
@@ -840,10 +927,13 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
         prompt_type: Registered prompt wrapper name or callable wrapper.
         use_examples: Whether codebook examples should be included in prompts.
         process_textbox: Whether textbox annotations should be generated.
+        chat_mode: How model calls share chat history.
+        reasoning_traces: Optional list that receives per-query reasoning records.
 
     Returns:
         Tuple of ``(classified_df, char_counts, timing_data)``.
     """
+    chat_mode = normalize_chat_mode(chat_mode)
     df = load_input_dataframe(csv_path, codebook)
     
     logger.info("Starting classification of %d rows", len(df))
@@ -860,12 +950,15 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
     
     # Initialize timing data dictionary
     timing_data = {'total_inference_time': 0, 'inference_count': 0}
+
+    continuous_session = ChatSession() if chat_mode == "continuous" else None
     
     # Process each row individually
     try:
         for idx, row in df.iterrows():
             row_num = idx + 1
             text = row[codebook['text_column']]
+            row_session = ChatSession() if chat_mode == "per_text" else continuous_session
 
             logger.info("[Row %d/%d] Starting annotations...", row_num, len(df))
 
@@ -885,6 +978,9 @@ def apply_classification_to_csv(csv_path, output_path, codebook, chain, prompt_t
                 retries=retries,
                 retry_strategy=retry_strategy,
                 retry_chain=retry_chain,
+                chat_session=row_session,
+                reasoning_traces=reasoning_traces,
+                chat_mode=chat_mode,
             )
 
             # Add annotations to row data
@@ -921,15 +1017,19 @@ def run_annotation(
     output_path,
     experiment_directory,
     prompt_type="standard",
-    use_examples=False,
-    temperature=None,
-    top_p=None,
+    use_examples=DEFAULT_USE_EXAMPLES,
+    temperature=DEFAULT_TEMPERATURE,
+    top_p=DEFAULT_TOP_P,
     process_textbox=False,
     process_span=False,
+    chat_mode=DEFAULT_CHAT_MODE,
+    reasoning=DEFAULT_REASONING,
+    run_id=None,
+    reasoning_traces_path=None,
     country_iso_code="USA",
     start_ollama_if_needed=True,
     retries=1,
-    retry_strategy="identical",
+    retry_strategy="reprompt",
     retry_temperature=DEFAULT_RETRY_TEMPERATURE,
 ):
     """Run one annotation job and persist its outputs to disk.
@@ -945,6 +1045,12 @@ def run_annotation(
         temperature: Optional sampling temperature.
         top_p: Optional nucleus-sampling value.
         process_textbox: Whether textbox annotations should be generated.
+        process_span: Whether span annotations should be generated.
+        chat_mode: How model calls share chat history: ``"per_text"``,
+            ``"per_query"``, or ``"continuous"``.
+        reasoning: Optional Ollama reasoning mode passed to ``ChatOllama``.
+        run_id: Optional run identifier written into ``config.json``.
+        reasoning_traces_path: Optional JSONL path for per-query reasoning traces.
         country_iso_code: Three-letter ISO 3166-1 alpha-3 country code for CodeCarbon.
         start_ollama_if_needed: If ``True``, try to start a local ``ollama serve``
             process when the default local server is not already reachable.
@@ -957,6 +1063,8 @@ def run_annotation(
     country_iso_code = normalize_country_iso_code(country_iso_code)
     temperature = _normalize_optional_parameter(temperature)
     top_p = _normalize_optional_parameter(top_p)
+    chat_mode = normalize_chat_mode(chat_mode)
+    reasoning = normalize_reasoning(reasoning)
     ollama_base_url = ensure_ollama_available(start_if_needed=start_ollama_if_needed)
 
     experiment_directory = Path(experiment_directory)
@@ -968,20 +1076,22 @@ def run_annotation(
     prompt_type_name = get_prompt_type_name(prompt_type)
 
     config = {
+        "run_id": run_id,
         "model": model,
         "prompt_type": prompt_type_name,
         "use_examples": bool(use_examples),
+        "temperature": temperature,
+        "top_p": top_p,
+        "chat_mode": chat_mode,
+        "reasoning": reasoning,
         "process_textbox": bool(process_textbox),
         "process_span": bool(process_span),
         "country_iso_code": country_iso_code,
         "task_name": task_name,
         "retries": int(retries),
         "retry_strategy": normalize_retry_strategy(retry_strategy),
+        "retry_temperature": retry_temperature,
     }
-    if temperature is not None:
-        config["temperature"] = temperature
-    if top_p is not None:
-        config["top_p"] = top_p
 
     with open(experiment_directory / "config.json", "w") as f:
         json.dump(config, f, indent=2)
@@ -1004,13 +1114,14 @@ def run_annotation(
     tracker.start()
 
     try:
-        chain = setup_model(model, temperature, top_p)
+        chain = setup_model(model, temperature, top_p, reasoning=reasoning)
         # For the "temperature" retry strategy, build a second chain at a higher
         # temperature so retries can diverge from an otherwise deterministic run.
         retry_strategy_name = normalize_retry_strategy(retry_strategy)
         retry_chain = None
         if retry_strategy_name == "temperature":
-            retry_chain = setup_model(model, retry_temperature, top_p)
+            retry_chain = setup_model(model, retry_temperature, top_p, reasoning=reasoning)
+        reasoning_traces = []
         classified_df, char_counts, timing_data = apply_classification_to_csv(
             str(csv_path),
             str(output_path),
@@ -1023,6 +1134,8 @@ def run_annotation(
             retries=retries,
             retry_strategy=retry_strategy_name,
             retry_chain=retry_chain,
+            chat_mode=chat_mode,
+            reasoning_traces=reasoning_traces,
         )
     finally:
         emissions = tracker.stop()
@@ -1032,6 +1145,12 @@ def run_annotation(
 
     with open(experiment_directory / "timing_data.json", "w") as f:
         json.dump(timing_data, f, indent=2)
+
+    if reasoning_traces:
+        trace_path = Path(reasoning_traces_path) if reasoning_traces_path else experiment_directory / "reasoning_traces.jsonl"
+        with open(trace_path, "w") as f:
+            for trace in reasoning_traces:
+                f.write(json.dumps(trace) + "\n")
 
     logger.info("Classification complete. Results saved to %s", output_path)
     logger.info("Configuration: %s", config)
@@ -1052,4 +1171,5 @@ def run_annotation(
         timing_data=timing_data,
         emissions=emissions,
         dataframe=classified_df,
+        reasoning_traces=reasoning_traces,
     )

@@ -18,10 +18,12 @@ from codebook_lab.types import (
 class TestExperimentSpec:
     def test_defaults(self):
         spec = ExperimentSpec(task="t", model="m")
-        assert spec.use_examples is False
+        assert spec.use_examples is True
         assert spec.prompt_type == "standard"
-        assert spec.temperature is None
+        assert spec.temperature == 0.0
         assert spec.top_p is None
+        assert spec.chat_mode == "per_text"
+        assert spec.reasoning is None
         assert spec.process_textbox is False
         assert spec.country_iso_code == "USA"
 
@@ -43,11 +45,15 @@ class TestExperimentSpec:
             prompt_type="persona",
             temperature=0.7,
             top_p=0.9,
+            chat_mode="continuous",
+            reasoning=True,
             process_textbox=True,
             country_iso_code="IRL",
         )
         assert spec.task == "my-task"
         assert spec.temperature == 0.7
+        assert spec.chat_mode == "continuous"
+        assert spec.reasoning is True
         assert spec.country_iso_code == "IRL"
 
 

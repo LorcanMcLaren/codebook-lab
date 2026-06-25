@@ -3,7 +3,21 @@ from __future__ import annotations
 from itertools import product
 from pathlib import Path
 import time
+import uuid
 
+from .defaults import (
+    DEFAULT_CHAT_MODE,
+    DEFAULT_COUNTRY_ISO_CODE,
+    DEFAULT_MODEL,
+    DEFAULT_PROMPT_TYPE,
+    DEFAULT_REASONING,
+    DEFAULT_TASK,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    DEFAULT_USE_EXAMPLES,
+    normalize_chat_mode,
+    normalize_reasoning,
+)
 from .examples import get_example_task_dir
 from .ollama import ensure_ollama_model
 from .types import ExperimentRunResult, ExperimentSpec
@@ -37,29 +51,45 @@ def expand_param_grid(param_grid: dict) -> list[ExperimentSpec]:
         param_grid: In-memory grid dictionary describing the Cartesian-product
             sweep. Expected keys include ``tasks``, ``models``, ``use_examples``,
             ``prompt_types``, ``temperatures``, ``top_ps``, ``process_textboxes``,
-            and ``country_iso_code``.
+            ``process_spans``, ``chat_modes``, ``reasoning``, and
+            ``country_iso_code``.
 
     Returns:
         A list of experiment specifications, one per Cartesian-product combination.
     """
-    tasks = list(param_grid.get("tasks") or ["policy-sentiment"])
-    models = list(param_grid.get("models") or ["gemma3:270m"])
-    use_examples_values = _coerce_sweep(param_grid.get("use_examples"), False)
-    prompt_types = _coerce_sweep(param_grid.get("prompt_types"), "standard")
-    temperatures = _coerce_sweep(param_grid.get("temperatures"), None)
-    top_ps = _coerce_sweep(param_grid.get("top_ps"), None)
+    tasks = list(param_grid.get("tasks") or [DEFAULT_TASK])
+    models = list(param_grid.get("models") or [DEFAULT_MODEL])
+    use_examples_values = _coerce_sweep(param_grid.get("use_examples"), DEFAULT_USE_EXAMPLES)
+    prompt_types = _coerce_sweep(param_grid.get("prompt_types"), DEFAULT_PROMPT_TYPE)
+    temperatures = _coerce_sweep(param_grid.get("temperatures"), DEFAULT_TEMPERATURE)
+    top_ps = _coerce_sweep(param_grid.get("top_ps"), DEFAULT_TOP_P)
+    chat_modes = _coerce_sweep(param_grid.get("chat_modes"), DEFAULT_CHAT_MODE)
+    reasoning_values = _coerce_sweep(param_grid.get("reasoning"), DEFAULT_REASONING)
     process_textboxes = _coerce_sweep(param_grid.get("process_textboxes"), False)
     process_spans = _coerce_sweep(param_grid.get("process_spans"), False)
-    country_iso_code = str(param_grid.get("country_iso_code") or "USA")
+    country_iso_code = str(param_grid.get("country_iso_code") or DEFAULT_COUNTRY_ISO_CODE)
 
     specs = []
-    for task, model, use_examples, prompt_type, temperature, top_p, process_textbox, process_span in product(
+    for (
+        task,
+        model,
+        use_examples,
+        prompt_type,
+        temperature,
+        top_p,
+        chat_mode,
+        reasoning,
+        process_textbox,
+        process_span,
+    ) in product(
         tasks,
         models,
         use_examples_values,
         prompt_types,
         temperatures,
         top_ps,
+        chat_modes,
+        reasoning_values,
         process_textboxes,
         process_spans,
     ):
@@ -71,6 +101,8 @@ def expand_param_grid(param_grid: dict) -> list[ExperimentSpec]:
                 prompt_type=str(prompt_type),
                 temperature=_normalize_optional_float(temperature),
                 top_p=_normalize_optional_float(top_p),
+                chat_mode=normalize_chat_mode(chat_mode),
+                reasoning=normalize_reasoning(reasoning),
                 process_textbox=_coerce_bool(process_textbox),
                 process_span=_coerce_bool(process_span),
                 country_iso_code=country_iso_code,
@@ -116,8 +148,9 @@ def build_experiment_paths(
     process_span: bool = False,
     output_root: str | Path = "outputs",
     timestamp: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Path | str]:
-    """Build deterministic output paths for one experiment configuration.
+    """Build output paths for one experiment run.
 
     Args:
         task: Task folder name under ``tasks/``.
@@ -129,31 +162,32 @@ def build_experiment_paths(
         process_textbox: Whether textbox annotations are included.
         output_root: Root directory where experiment outputs should be written.
         timestamp: Optional timestamp string in ``YYYY-MM-DD_HH-MM-SS`` format.
+        run_id: Optional explicit run identifier. When omitted, one is generated
+            from the timestamp and a short random suffix.
 
     Returns:
         Dictionary containing the experiment directory and standard output file paths.
     """
     timestamp = timestamp or time.strftime("%Y-%m-%d_%H-%M-%S")
-    model_safe = model.replace(":", "-")
-    experiment_dir = Path(output_root) / task / f"{model_safe}_examples{str(use_examples).lower()}_{prompt_type}"
-    model_id = f"{model}_examples{str(use_examples).lower()}_{prompt_type}"
+    run_id = run_id or f"run_{timestamp}_{uuid.uuid4().hex[:8]}"
+    experiment_dir = Path(output_root) / task / run_id
+    model_id = model
 
     if temperature is not None:
-        experiment_dir = Path(f"{experiment_dir}_temp{temperature}")
         model_id = f"{model_id}_temp{temperature}"
     if top_p is not None:
-        experiment_dir = Path(f"{experiment_dir}_topp{top_p}")
         model_id = f"{model_id}_topp{top_p}"
+    if use_examples:
+        model_id = f"{model_id}_examples"
+    if prompt_type:
+        model_id = f"{model_id}_{prompt_type}"
     if process_textbox:
-        experiment_dir = Path(f"{experiment_dir}_textbox")
         model_id = f"{model_id}_textbox"
     if process_span:
-        experiment_dir = Path(f"{experiment_dir}_span")
         model_id = f"{model_id}_span"
 
-    experiment_dir = Path(f"{experiment_dir}_{timestamp}")
-
     return {
+        "run_id": run_id,
         "timestamp": timestamp,
         "model_id": model_id,
         "experiment_directory": experiment_dir,
@@ -162,6 +196,7 @@ def build_experiment_paths(
         "emissions_file": experiment_dir / "emissions.csv",
         "timing_file": experiment_dir / "timing_data.json",
         "char_counts_file": experiment_dir / "char_counts.json",
+        "reasoning_traces_file": experiment_dir / "reasoning_traces.jsonl",
     }
 
 
@@ -243,6 +278,10 @@ def run_experiment(
         top_p=spec.top_p,
         process_textbox=spec.process_textbox,
         process_span=spec.process_span,
+        chat_mode=spec.chat_mode,
+        reasoning=spec.reasoning,
+        run_id=paths["run_id"],
+        reasoning_traces_path=paths["reasoning_traces_file"],
         country_iso_code=spec.country_iso_code,
         start_ollama_if_needed=start_ollama_if_needed,
     )
@@ -260,6 +299,8 @@ def run_experiment(
         top_p=spec.top_p,
         prompt_type=spec.prompt_type,
         use_examples=spec.use_examples,
+        chat_mode=spec.chat_mode,
+        reasoning=spec.reasoning,
         process_textbox=spec.process_textbox,
         process_span=spec.process_span,
         emissions_file=paths["emissions_file"],
@@ -267,6 +308,7 @@ def run_experiment(
         timestamp=paths["timestamp"],
         timing_file=paths["timing_file"],
         char_counts_file=paths["char_counts_file"],
+        run_id=paths["run_id"],
     )
 
     print()
@@ -278,6 +320,7 @@ def run_experiment(
         experiment_directory=paths["experiment_directory"],
         model_id=paths["model_id"],
         label=label,
+        run_id=paths["run_id"],
         annotation=annotation_result,
         metrics=metrics_result,
     )

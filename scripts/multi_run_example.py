@@ -17,10 +17,12 @@ PARAM_GRID = {
     "country_iso_code": "IRL",
     "tasks": ["policy-sentiment"],
     "models": ["gemma3:270m"],
-    "use_examples": [False, True],
+    "use_examples": [True],
     "prompt_types": ["standard"],
-    "temperatures": [None],
+    "temperatures": [0],
     "top_ps": [None],
+    "chat_modes": ["per_text"],
+    "reasoning": [None],
     "process_textboxes": [True],
 }
 
