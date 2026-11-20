@@ -52,7 +52,7 @@ dev = ["pytest"]
 [project.urls]
 Homepage = "https://github.com/LorcanMcLaren/codebook-lab"
 Repository = "https://github.com/LorcanMcLaren/codebook-lab"
-Documentation = "https://github.com/LorcanMcLaren/codebook-lab#readme"
+Documentation = "https://lorcanmclaren.com/codebook-lab/"
 DOI = "https://doi.org/10.5281/zenodo.19185921"
 
 [tool.setuptools.packages.find]
